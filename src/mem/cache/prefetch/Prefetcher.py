@@ -773,6 +773,38 @@ class FetchDirectedPrefetcher(BasePrefetcher):
         "blocks already in the cache.",
     )
 
+class CMCPrefetcher(QueuedPrefetcher):
+    type = "CMCPrefetcher"
+    cxx_class = "gem5::prefetch::CMCPrefetcher"
+    cxx_header = "mem/cache/prefetch/cmc.hh"
+
+    use_virtual_addresses = False
+    on_read = True
+    on_write = False
+    on_data  = True
+    on_inst  = False
+    on_miss = True
+    prefetch_on_access = False
+    prefetch_on_pf_hit = True  # TODO: check these!
+    # cross_pages = True
+    cachetags = Param.BaseTags(Parent.tags, "Cache we belong to")
+        
+    storage_entries = Param.MemorySize(
+        "16384",
+        "Number of CMC storage entries"
+    )
+    storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
+    storage_indexing_policy = Param.BaseIndexingPolicy(
+        SetAssociative(
+            entry_size=1,
+            assoc=Parent.storage_assoc,
+            size=Parent.storage_entries),
+        "Indexing policy of active generation table"
+    )
+    storage_replacement_policy = Param.BaseReplacementPolicy(
+        BRRIPRP(),
+        "Replacement policy of active generation table"
+    )
 
 add_citation(
     FetchDirectedPrefetcher,
