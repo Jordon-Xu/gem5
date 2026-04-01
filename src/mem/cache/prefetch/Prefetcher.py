@@ -794,6 +794,7 @@ class CMCPrefetcher(QueuedPrefetcher):
         "Number of CMC storage entries"
     )
     storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
+    degree = Param.Int(16, "Number of prefetches to generate")
     storage_indexing_policy = Param.BaseIndexingPolicy(
         SetAssociative(
             entry_size=1,
