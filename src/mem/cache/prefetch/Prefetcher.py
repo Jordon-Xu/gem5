@@ -795,6 +795,14 @@ class CMCPrefetcher(QueuedPrefetcher):
     )
     storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
     degree = Param.Int(16, "Number of prefetches to generate")
+    ctx_enable = Param.Bool(
+        True,
+        "Enable retired-instruction-PC context for CMC"
+    )
+    ctx_shift = Param.Unsigned(
+        5,
+        "Rotate/XOR shift used to update the retired-PC context hash"
+    )
     storage_indexing_policy = Param.BaseIndexingPolicy(
         SetAssociative(
             entry_size=1,

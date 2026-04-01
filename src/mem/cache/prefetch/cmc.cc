@@ -20,10 +20,13 @@ namespace prefetch
 
 CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
 : Queued(p),
-      cachetags(p.cachetags),
+    cachetags(p.cachetags),
     recorder(new Recorder(p.degree)),
     storage(p.storage_assoc, p.storage_entries, p.storage_indexing_policy,
             p.storage_replacement_policy, StorageEntry()),
+    currentBranchCtx(0),
+    ctxEnable(p.ctx_enable),
+    ctxShift(p.ctx_shift),
     trigger()
 {
                     trigger.clear();
@@ -32,18 +35,32 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
 void
 CMCPrefetcher::updateBranchCtx(Addr branch_pc)
 {
-    currentBranchCtx =
-        (currentBranchCtx << branchShift) ^
-        (currentBranchCtx >> (64 - branchShift)) ^
-        static_cast<uint64_t>(branch_pc);
+    if (!ctxEnable) {
+        return;
+    }
+
+    const unsigned s = ctxShift & 63;
+
+    if (s == 0) {
+        currentBranchCtx ^= static_cast<uint64_t>(branch_pc);
+    } else {
+        currentBranchCtx =
+            (currentBranchCtx << s) ^
+            (currentBranchCtx >> (64 - s)) ^
+            static_cast<uint64_t>(branch_pc);
+    }
 }
 
 void
 CMCPrefetcher::notifyRetiredBranch(Addr branch_pc)
 {
+    if (!ctxEnable) {
+        return;
+    }
+
     updateBranchCtx(branch_pc);
     DPRINTF(HWPrefetch, "CMC retired pc=%lx new_ctx=%lx\n",
-        branch_pc, currentBranchCtx);
+            branch_pc, currentBranchCtx);
 }
 
 void

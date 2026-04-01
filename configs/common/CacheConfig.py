@@ -156,6 +156,8 @@ def config_cache(options, system):
                     dcache.prefetcher,
                     "listenFromProbeRetiredInstructions"
                 )
+                and hasattr(dcache.prefetcher, "ctx_enable")
+                and dcache.prefetcher.ctx_enable
             ):
                 dcache.prefetcher.listenFromProbeRetiredInstructions(
                     system.cpu[i]

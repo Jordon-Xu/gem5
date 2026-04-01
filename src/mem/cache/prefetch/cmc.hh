@@ -95,7 +95,8 @@ class CMCPrefetcher : public Queued
 
   /* branch context state */
   uint64_t currentBranchCtx = 0;
-  unsigned branchShift = 5;
+  bool ctxEnable;
+  unsigned ctxShift;
 
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
@@ -117,7 +118,7 @@ class CMCPrefetcher : public Queued
 
     uint64_t getCurrentBranchCtx() const
     {
-        return currentBranchCtx;
+        return ctxEnable ? currentBranchCtx : 0;
     }
 
     void updateBranchCtx(Addr branch_pc);
