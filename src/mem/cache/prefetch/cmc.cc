@@ -59,7 +59,7 @@ CMCPrefetcher::notifyRetiredBranch(Addr branch_pc)
     }
 
     updateBranchCtx(branch_pc);
-    DPRINTF(HWPrefetch, "CMC retired pc=%lx new_ctx=%lx\n",
+    DPRINTF(HWPrefetch, "CMC retired branch pc=%lx new_ctx=%lx\n",
             branch_pc, currentBranchCtx);
 }
 
@@ -76,6 +76,12 @@ CMCPrefetcher::addEventProbeRetiredInsts(SimObject *obj, const char *name)
         obj->getProbeManager()->connect<PrefetchListenerPC>(*this, name));
 }
 
+void
+CMCPrefetcher::addEventProbeRetiredBranches(SimObject *obj, const char *name)
+{
+    listenersPC.push_back(
+        obj->getProbeManager()->connect<PrefetchListenerPC>(*this, name));
+}
 
 void
 CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,

@@ -154,14 +154,18 @@ def config_cache(options, system):
                 and dcache.prefetcher != NULL
                 and hasattr(
                     dcache.prefetcher,
-                    "listenFromProbeRetiredInstructions"
+                    # "listenFromProbeRetiredInstructions"
+                    "listenFromProbeRetiredBranches"
                 )
                 and hasattr(dcache.prefetcher, "ctx_enable")
                 and dcache.prefetcher.ctx_enable
             ):
-                dcache.prefetcher.listenFromProbeRetiredInstructions(
+                # dcache.prefetcher.listenFromProbeRetiredInstructions(
+                #     system.cpu[i]
+                # )
+                dcache.prefetcher.listenFromProbeRetiredBranches(
                     system.cpu[i]
-                )
+                )                
 
             # If we are using ISA.X86 or ISA.RISCV, we set walker caches.
             if ObjectList.cpu_list.get_isa(options.cpu_type) in [

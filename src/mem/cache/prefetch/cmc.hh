@@ -107,6 +107,7 @@ class CMCPrefetcher : public Queued
     /* first-step branch context hook */
     void notifyRetiredBranch(Addr branch_pc);
     void addEventProbeRetiredInsts(SimObject *obj, const char *name);
+    void addEventProbeRetiredBranches(SimObject *obj, const char *name);
 
   private:
     uint64_t hash(Addr addr, Addr pc, uint64_t ctx) {

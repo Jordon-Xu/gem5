@@ -552,6 +552,7 @@ class BaseCPU : public ClockedObject
 
     /** Retired branches (any type) */
     probing::PMUUPtr ppRetiredBranches;
+    probing::PMUUPtr ppRetiredBranchesPC;
 
     /** CPU cycle counter even if any thread Context is suspended*/
     probing::PMUUPtr ppAllCycles;

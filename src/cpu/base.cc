@@ -401,6 +401,7 @@ BaseCPU::regProbePoints()
     ppRetiredLoads = pmuProbePoint("RetiredLoads");
     ppRetiredStores = pmuProbePoint("RetiredStores");
     ppRetiredBranches = pmuProbePoint("RetiredBranches");
+    ppRetiredBranchesPC = pmuProbePoint("RetiredBranchesPC");
 
     ppSleeping = new ProbePointArg<bool>(this->getProbeManager(),
                                          "Sleeping");
@@ -420,8 +421,10 @@ BaseCPU::probeInstCommit(const StaticInstPtr &inst, Addr pc)
     if (inst->isStore() || inst->isAtomic())
         ppRetiredStores->notify(1);
 
-    if (inst->isControl())
+    if (inst->isControl()){
         ppRetiredBranches->notify(1);
+        ppRetiredBranchesPC->notify(pc);
+    }       
 }
 
 BaseCPU::

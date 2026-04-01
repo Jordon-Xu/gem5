@@ -815,13 +815,23 @@ class CMCPrefetcher(QueuedPrefetcher):
         "Replacement policy of active generation table"
     )
 
-    cxx_exports = [PyBindMethod("addEventProbeRetiredInsts")]
+    cxx_exports = [
+        PyBindMethod("addEventProbeRetiredInsts"),
+        PyBindMethod("addEventProbeRetiredBranches"),
+    ]
 
     def listenFromProbeRetiredInstructions(self, simObj):
         if not isinstance(simObj, SimObject):
             raise TypeError("argument must be of SimObject type")
         self.addEvent(
             HWPProbeEventRetiredInsts(self, simObj, "RetiredInstsPC")
+        )
+        
+    def listenFromProbeRetiredBranches(self, simObj):
+        if not isinstance(simObj, SimObject):
+            raise TypeError("argument must be of SimObject type")
+        self.addEvent(
+            HWPProbeEventRetiredInsts(self, simObj, "RetiredBranchesPC")
         )
 
 add_citation(
