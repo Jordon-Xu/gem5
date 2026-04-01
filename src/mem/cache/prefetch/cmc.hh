@@ -43,13 +43,19 @@ class CMCPrefetcher : public Queued
         public:
             std::vector<Addr> entries;
             int index;
-            Recorder() : entries(), index(0) {}
+            const int nr_entry;
+
+            explicit Recorder(int degree)
+                : entries(), index(0), nr_entry(degree)
+            {
+                assert(degree > 0);
+            }
             bool entry_empty() { return entries.empty(); }
             Addr get_base_addr() { return entries[0]; }
 
             bool train_entry(Addr, bool, bool*);
             void reset();
-            const int nr_entry = 16;
+            // const int nr_entry = 16;
         private:
     };
 

@@ -790,10 +790,11 @@ class CMCPrefetcher(QueuedPrefetcher):
     cachetags = Param.BaseTags(Parent.tags, "Cache we belong to")
         
     storage_entries = Param.MemorySize(
-        "16384",
+        "1024",
         "Number of CMC storage entries"
     )
     storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
+    degree = Param.Int(16, "Number of prefetches to generate")
     storage_indexing_policy = Param.BaseIndexingPolicy(
         SetAssociative(
             entry_size=1,

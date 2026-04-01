@@ -21,8 +21,8 @@ namespace prefetch
 CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
 : Queued(p),
       cachetags(p.cachetags),
-    recorder(new Recorder()),
-    storage(p.storage_entries, p.storage_entries, p.storage_indexing_policy,
+    recorder(new Recorder(p.degree)),
+    storage(p.storage_assoc, p.storage_entries, p.storage_indexing_policy,
             p.storage_replacement_policy, StorageEntry()),
     trigger()
 {
