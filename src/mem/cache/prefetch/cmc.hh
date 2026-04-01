@@ -12,6 +12,7 @@
 #include "mem/cache/tags/indexing_policies/set_associative.hh"
 #include "mem/packet.hh"
 #include "params/CMCPrefetcher.hh"
+#include "sim/probe/probe.hh"
 
 namespace gem5
 {
@@ -34,9 +35,10 @@ class CMCPrefetcher : public Queued
             Addr pc;
             Addr addr;
             bool is_secure;
-            RecordEntry(Addr p, Addr a, bool s)
-                : pc(p), addr(a), is_secure(s) {}
-            RecordEntry() : addr(0), is_secure(true) {}
+            uint64_t branch_ctx; 
+            RecordEntry(Addr p, Addr a, bool s, uint64_t ctx)
+                : pc(p), addr(a), is_secure(s), branch_ctx(ctx) {}
+            RecordEntry() : addr(0), is_secure(true), branch_ctx(0) {}
     };
     class Recorder
     {
@@ -91,16 +93,49 @@ class CMCPrefetcher : public Queued
     AssociativeSet<StorageEntry> storage;
     uint64_t acc_id = 1;
 
+  /* branch context state */
+  uint64_t currentBranchCtx = 0;
+  unsigned branchShift = 5;
+
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
     void calculatePrefetch(const PrefetchInfo &pfi,
                            std::vector<AddrPriority> &addresses,
                            const CacheAccessor &cache_accessor) override;
+
+    /* first-step branch context hook */
+    void notifyRetiredBranch(Addr branch_pc);
+    void addEventProbeRetiredInsts(SimObject *obj, const char *name);
+
   private:
-    uint64_t hash(Addr addr, Addr pc) {
-        return addr ^ (pc<<8);
+    uint64_t hash(Addr addr, Addr pc, uint64_t ctx) {
+      uint64_t h = addr;
+      h ^= (static_cast<uint64_t>(pc) << 8);
+      h ^= (ctx + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+      return h;
     }
 
+    uint64_t getCurrentBranchCtx() const
+    {
+        return currentBranchCtx;
+    }
+
+    void updateBranchCtx(Addr branch_pc);
+
+    class PrefetchListenerPC : public ProbeListenerArgBase<Addr>
+    {
+      public:
+        PrefetchListenerPC(CMCPrefetcher &_parent, const std::string &name)
+            : ProbeListenerArgBase<Addr>(name), parent(_parent)
+        {}
+
+        void notify(const Addr &pc) override;
+
+      private:
+        CMCPrefetcher &parent;
+    };
+
+std::vector<ProbeListenerPtr<PrefetchListenerPC>> listenersPC;
 
     static const int STACK_SIZE = 4;
     std::deque<RecordEntry> trigger;

@@ -147,6 +147,20 @@ def config_cache(options, system):
             icache = icache_class(**_get_cache_opts("l1i", options))
             dcache = dcache_class(**_get_cache_opts("l1d", options))
 
+            # If the selected L1D prefetcher supports retired-instruction
+            # probes, connect it to this CPU's RetiredInstsPC probe.
+            if (
+                hasattr(dcache, "prefetcher")
+                and dcache.prefetcher != NULL
+                and hasattr(
+                    dcache.prefetcher,
+                    "listenFromProbeRetiredInstructions"
+                )
+            ):
+                dcache.prefetcher.listenFromProbeRetiredInstructions(
+                    system.cpu[i]
+                )
+
             # If we are using ISA.X86 or ISA.RISCV, we set walker caches.
             if ObjectList.cpu_list.get_isa(options.cpu_type) in [
                 ISA.RISCV,

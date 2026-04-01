@@ -790,7 +790,7 @@ class CMCPrefetcher(QueuedPrefetcher):
     cachetags = Param.BaseTags(Parent.tags, "Cache we belong to")
         
     storage_entries = Param.MemorySize(
-        "1024",
+        "16384",
         "Number of CMC storage entries"
     )
     storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
@@ -806,6 +806,15 @@ class CMCPrefetcher(QueuedPrefetcher):
         BRRIPRP(),
         "Replacement policy of active generation table"
     )
+
+    cxx_exports = [PyBindMethod("addEventProbeRetiredInsts")]
+
+    def listenFromProbeRetiredInstructions(self, simObj):
+        if not isinstance(simObj, SimObject):
+            raise TypeError("argument must be of SimObject type")
+        self.addEvent(
+            HWPProbeEventRetiredInsts(self, simObj, "RetiredInstsPC")
+        )
 
 add_citation(
     FetchDirectedPrefetcher,

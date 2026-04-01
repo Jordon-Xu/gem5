@@ -29,6 +29,35 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
                     trigger.clear();
 }
 
+void
+CMCPrefetcher::updateBranchCtx(Addr branch_pc)
+{
+    currentBranchCtx =
+        (currentBranchCtx << branchShift) ^
+        (currentBranchCtx >> (64 - branchShift)) ^
+        static_cast<uint64_t>(branch_pc);
+}
+
+void
+CMCPrefetcher::notifyRetiredBranch(Addr branch_pc)
+{
+    updateBranchCtx(branch_pc);
+    DPRINTF(HWPrefetch, "CMC retired pc=%lx new_ctx=%lx\n",
+        branch_pc, currentBranchCtx);
+}
+
+void
+CMCPrefetcher::PrefetchListenerPC::notify(const Addr &pc)
+{
+    parent.notifyRetiredBranch(pc);
+}
+
+void
+CMCPrefetcher::addEventProbeRetiredInsts(SimObject *obj, const char *name)
+{
+    listenersPC.push_back(
+        obj->getProbeManager()->connect<PrefetchListenerPC>(*this, name));
+}
 
 
 void
@@ -44,15 +73,16 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     Addr addr = pfi.getAddr();
     Addr block_addr = blockIndex(addr); // takes off 6 Least Significant Bits for cache line
     bool is_secure = pfi.isSecure();
+    uint64_t ctx = getCurrentBranchCtx();
 
 
-    DPRINTF(HWPrefetch, "CMC train: pc: %lx, addr: %lx\n", pc, block_addr);
+    DPRINTF(HWPrefetch, "CMC train: pc: %lx, addr: %lx, ctx: %lx\n", pc, block_addr, ctx);
 
     
     
 
     // Prefetch: check if there is a match
-    StorageEntry *match_entry = storage.findEntry(hash(block_addr, pc), is_secure);
+    StorageEntry *match_entry = storage.findEntry(hash(block_addr, pc, ctx), is_secure);
     // prefetchStats.metadataAccesses++;
     if (match_entry) {
         storage.accessEntry(match_entry);
@@ -85,7 +115,7 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
         //        trigger.size(), block_addr);
         assert(trigger.size()<STACK_SIZE);
 
-        trigger.push_back(RecordEntry(pc, block_addr, is_secure));
+        trigger.push_back(RecordEntry(pc, block_addr, is_secure, ctx));
     }
 
     /* 2. Train entry */
@@ -100,22 +130,22 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             //printf("trigger train finished, pc: %lx, addr: %lx\n",
                //     trigger_head.pc, trigger_head.addr);
 
-            StorageEntry *entry = storage.findEntry(hash(trigger_head.addr, trigger_head.pc), trigger_head.is_secure);
+            StorageEntry *entry = storage.findEntry(hash(trigger_head.addr, trigger_head.pc, trigger_head.branch_ctx), trigger_head.is_secure);
             if (entry) {
                 // storage.accessEntry(entry); do not update replacement
-                DPRINTF(HWPrefetch, "CMC: enter the same trigger, pc: %lx, addr: %lx\n",
-                                    trigger_head.pc, trigger_head.addr);
+                DPRINTF(HWPrefetch, "CMC: enter the same trigger, pc: %lx, addr: %lx, ctx: %lx\n",
+                                    trigger_head.pc, trigger_head.addr, trigger_head.branch_ctx);
                 entry->addresses = recorder->entries;
 
 
             } else {
-                entry = storage.findVictim(hash(trigger_head.addr, trigger_head.pc));
+                entry = storage.findVictim(hash(trigger_head.addr, trigger_head.pc, trigger_head.branch_ctx));
                 entry->addresses = recorder->entries;
 
 
 
                 storage.insertEntry(
-                    hash(trigger_head.addr, trigger_head.pc),
+                    hash(trigger_head.addr, trigger_head.pc, trigger_head.branch_ctx),
                     trigger_head.is_secure,
                     entry
                 );
@@ -133,7 +163,7 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 				//meaning we never reach 100% coverage.
 				//This makes the trigger the last addr of the previous group, provided no other trigger already
 				// is prepared, because it was a recent reused addr.
-				trigger.push_back(RecordEntry(pc, block_addr, is_secure));
+				trigger.push_back(RecordEntry(pc, block_addr, is_secure, ctx));
 			}
             recorder->reset();
 
