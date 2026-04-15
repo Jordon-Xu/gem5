@@ -97,6 +97,9 @@ class CMCPrefetcher : public Queued
   uint64_t currentBranchCtx = 0;
   bool ctxEnable;
   unsigned ctxShift;
+  unsigned ctxBits;
+  uint64_t retiredBranchCount = 0;
+  unsigned ctxUpdatePeriod;
 
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
@@ -111,11 +114,24 @@ class CMCPrefetcher : public Queued
 
   private:
     uint64_t hash(Addr addr, Addr pc, uint64_t ctx) {
-      uint64_t h = addr;
-      h ^= (static_cast<uint64_t>(pc) << 8);
-      h ^= (ctx + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
-      return h;
+        uint64_t h = addr ^ (static_cast<uint64_t>(pc) << 8);
+
+        if (!ctxEnable || ctxBits == 0) {
+            return h;
+        }
+
+        const unsigned bits = std::min(ctxBits, 16u);
+        const uint64_t mask = (bits == 64) ? ~0ULL : ((1ULL << bits) - 1);
+        const uint64_t ctx_small = ctx & mask;
+
+        return h ^ (ctx_small << 1);
     }
+    // uint64_t hash(Addr addr, Addr pc, uint64_t ctx) {
+    //   uint64_t h = addr;
+    //   h ^= (static_cast<uint64_t>(pc) << 8);
+    //   h ^= (ctx + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+    //   return h;
+    // }
 
     uint64_t getCurrentBranchCtx() const
     {

@@ -815,6 +815,16 @@ class CMCPrefetcher(QueuedPrefetcher):
         "Replacement policy of active generation table"
     )
 
+    ctx_bits = Param.Unsigned(
+        1,
+        "Number of low-order context bits used in the CMC trigger key"
+    )
+
+    ctx_update_period = Param.Unsigned(
+        4,
+        "Update branch context once every N retired branches"
+    )
+
     cxx_exports = [
         PyBindMethod("addEventProbeRetiredInsts"),
         PyBindMethod("addEventProbeRetiredBranches"),

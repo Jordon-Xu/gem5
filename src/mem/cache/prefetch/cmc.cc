@@ -27,6 +27,9 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     currentBranchCtx(0),
     ctxEnable(p.ctx_enable),
     ctxShift(p.ctx_shift),
+    ctxBits(p.ctx_bits),
+    retiredBranchCount(0),
+    ctxUpdatePeriod(p.ctx_update_period),
     trigger()
 {
                     trigger.clear();
@@ -55,6 +58,11 @@ void
 CMCPrefetcher::notifyRetiredBranch(Addr branch_pc)
 {
     if (!ctxEnable) {
+        return;
+    }
+
+    retiredBranchCount++;
+    if ((retiredBranchCount % ctxUpdatePeriod) != 0) {
         return;
     }
 
@@ -99,13 +107,16 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     uint64_t ctx = getCurrentBranchCtx();
 
 
-    DPRINTF(HWPrefetch, "CMC train: pc: %lx, addr: %lx, ctx: %lx\n", pc, block_addr, ctx);
+    // DPRINTF(HWPrefetch, "CMC train: pc: %lx, addr: %lx, ctx: %lx\n", pc, block_addr, ctx);
 
-    
+    auto lookup_key = hash(block_addr, pc, ctx);
+    DPRINTF(HWPrefetch,
+            "CMC lookup pc=%lx addr=%lx ctx=%lx key=%lx\n",
+            pc, block_addr, ctx, lookup_key); 
     
 
     // Prefetch: check if there is a match
-    StorageEntry *match_entry = storage.findEntry(hash(block_addr, pc, ctx), is_secure);
+    StorageEntry *match_entry = storage.findEntry(lookup_key, is_secure);
     // prefetchStats.metadataAccesses++;
     if (match_entry) {
         storage.accessEntry(match_entry);
@@ -152,8 +163,12 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 			//finished gets set once a coalesced set of 16 targets get stored in the training entry.
             //printf("trigger train finished, pc: %lx, addr: %lx\n",
                //     trigger_head.pc, trigger_head.addr);
-
-            StorageEntry *entry = storage.findEntry(hash(trigger_head.addr, trigger_head.pc, trigger_head.branch_ctx), trigger_head.is_secure);
+                            
+            auto train_key = hash(trigger_head.addr, trigger_head.pc, trigger_head.branch_ctx);
+            DPRINTF(HWPrefetch,
+                    "CMC train-key pc=%lx addr=%lx ctx=%lx key=%lx\n",
+                    trigger_head.pc, trigger_head.addr, trigger_head.branch_ctx, train_key);    
+            StorageEntry *entry = storage.findEntry(train_key, trigger_head.is_secure);
             if (entry) {
                 // storage.accessEntry(entry); do not update replacement
                 DPRINTF(HWPrefetch, "CMC: enter the same trigger, pc: %lx, addr: %lx, ctx: %lx\n",
@@ -162,13 +177,13 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 
 
             } else {
-                entry = storage.findVictim(hash(trigger_head.addr, trigger_head.pc, trigger_head.branch_ctx));
+                entry = storage.findVictim(train_key);
                 entry->addresses = recorder->entries;
 
 
 
                 storage.insertEntry(
-                    hash(trigger_head.addr, trigger_head.pc, trigger_head.branch_ctx),
+                    train_key,
                     trigger_head.is_secure,
                     entry
                 );
