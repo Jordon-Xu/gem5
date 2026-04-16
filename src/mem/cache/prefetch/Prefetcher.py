@@ -695,6 +695,24 @@ class HWPProbeEventRetiredInsts(HWPProbeEvent):
                 )
 
 
+class HWPProbeEventRetiredBranches(HWPProbeEvent):
+    def register(self):
+        if self.obj:
+            for name in self.names:
+                self.prefetcher.getCCObject().addEventProbeRetiredBranches(
+                    self.obj.getCCObject(), name
+                )
+
+
+class HWPProbeEventRetiredTakenBranches(HWPProbeEvent):
+    def register(self):
+        if self.obj:
+            for name in self.names:
+                self.prefetcher.getCCObject().addEventProbeRetiredTakenBranches(
+                    self.obj.getCCObject(), name
+                )
+
+
 class PIFPrefetcher(QueuedPrefetcher):
     type = "PIFPrefetcher"
     cxx_class = "gem5::prefetch::PIF"
@@ -773,6 +791,7 @@ class FetchDirectedPrefetcher(BasePrefetcher):
         "blocks already in the cache.",
     )
 
+
 class CMCPrefetcher(QueuedPrefetcher):
     type = "CMCPrefetcher"
     cxx_class = "gem5::prefetch::CMCPrefetcher"
@@ -781,53 +800,54 @@ class CMCPrefetcher(QueuedPrefetcher):
     use_virtual_addresses = False
     on_read = True
     on_write = False
-    on_data  = True
-    on_inst  = False
+    on_data = True
+    on_inst = False
     on_miss = True
     prefetch_on_access = False
     prefetch_on_pf_hit = True  # TODO: check these!
     # cross_pages = True
     cachetags = Param.BaseTags(Parent.tags, "Cache we belong to")
-        
+
     storage_entries = Param.MemorySize(
-        "16384",
-        "Number of CMC storage entries"
+        "16384", "Number of CMC storage entries"
     )
     storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
     degree = Param.Int(16, "Number of prefetches to generate")
-    ctx_enable = Param.Bool(
-        True,
-        "Enable retired-instruction-PC context for CMC"
+    ctx_enable = Param.Bool(True, "Enable retired-branch-PC context for CMC")
+    ctx_taken_only = Param.Bool(
+        False, "Update CMC context from taken retired branches only"
     )
     ctx_shift = Param.Unsigned(
-        5,
-        "Rotate/XOR shift used to update the retired-PC context hash"
+        5, "Rotate/XOR shift used to update the retired-PC context hash"
     )
     storage_indexing_policy = Param.BaseIndexingPolicy(
         SetAssociative(
             entry_size=1,
             assoc=Parent.storage_assoc,
-            size=Parent.storage_entries),
-        "Indexing policy of active generation table"
+            size=Parent.storage_entries,
+        ),
+        "Indexing policy of active generation table",
     )
     storage_replacement_policy = Param.BaseReplacementPolicy(
-        BRRIPRP(),
-        "Replacement policy of active generation table"
+        BRRIPRP(), "Replacement policy of active generation table"
     )
 
     ctx_bits = Param.Unsigned(
-        1,
-        "Number of low-order context bits used in the CMC trigger key"
+        1, "Number of low-order bits kept in the secondary CMC context tag"
     )
 
     ctx_update_period = Param.Unsigned(
-        4,
-        "Update branch context once every N retired branches"
+        4, "Update branch context once every N retired branches"
+    )
+
+    ctx_mismatch_degree = Param.Unsigned(
+        4, "Number of prefetches to issue on a context mismatch"
     )
 
     cxx_exports = [
         PyBindMethod("addEventProbeRetiredInsts"),
         PyBindMethod("addEventProbeRetiredBranches"),
+        PyBindMethod("addEventProbeRetiredTakenBranches"),
     ]
 
     def listenFromProbeRetiredInstructions(self, simObj):
@@ -836,13 +856,23 @@ class CMCPrefetcher(QueuedPrefetcher):
         self.addEvent(
             HWPProbeEventRetiredInsts(self, simObj, "RetiredInstsPC")
         )
-        
+
     def listenFromProbeRetiredBranches(self, simObj):
         if not isinstance(simObj, SimObject):
             raise TypeError("argument must be of SimObject type")
         self.addEvent(
-            HWPProbeEventRetiredInsts(self, simObj, "RetiredBranchesPC")
+            HWPProbeEventRetiredBranches(self, simObj, "RetiredBranchesPC")
         )
+
+    def listenFromProbeRetiredTakenBranches(self, simObj):
+        if not isinstance(simObj, SimObject):
+            raise TypeError("argument must be of SimObject type")
+        self.addEvent(
+            HWPProbeEventRetiredTakenBranches(
+                self, simObj, "RetiredTakenBranchesPC"
+            )
+        )
+
 
 add_citation(
     FetchDirectedPrefetcher,

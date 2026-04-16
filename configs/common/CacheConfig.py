@@ -147,25 +147,30 @@ def config_cache(options, system):
             icache = icache_class(**_get_cache_opts("l1i", options))
             dcache = dcache_class(**_get_cache_opts("l1d", options))
 
-            # If the selected L1D prefetcher supports retired-instruction
-            # probes, connect it to this CPU's RetiredInstsPC probe.
+            # If the selected L1D prefetcher supports retired-branch probes,
+            # always register the baseline branch stream. Register the
+            # taken-only stream as well when supported and let the final
+            # prefetcher params decide which one is consumed. This avoids
+            # mismatches with late --param overrides.
             if (
                 hasattr(dcache, "prefetcher")
                 and dcache.prefetcher != NULL
                 and hasattr(
                     dcache.prefetcher,
                     # "listenFromProbeRetiredInstructions"
-                    "listenFromProbeRetiredBranches"
+                    "listenFromProbeRetiredBranches",
                 )
                 and hasattr(dcache.prefetcher, "ctx_enable")
                 and dcache.prefetcher.ctx_enable
             ):
-                # dcache.prefetcher.listenFromProbeRetiredInstructions(
-                #     system.cpu[i]
-                # )
-                dcache.prefetcher.listenFromProbeRetiredBranches(
-                    system.cpu[i]
-                )                
+                dcache.prefetcher.listenFromProbeRetiredBranches(system.cpu[i])
+                if hasattr(
+                    dcache.prefetcher,
+                    "listenFromProbeRetiredTakenBranches",
+                ):
+                    dcache.prefetcher.listenFromProbeRetiredTakenBranches(
+                        system.cpu[i]
+                    )
 
             # If we are using ISA.X86 or ISA.RISCV, we set walker caches.
             if ObjectList.cpu_list.get_isa(options.cpu_type) in [

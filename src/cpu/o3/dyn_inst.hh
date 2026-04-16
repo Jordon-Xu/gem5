@@ -328,6 +328,9 @@ class DynInst : public ExecContext, public RefCounted
     /** The Macroop if one exists */
     const StaticInstPtr macroop;
 
+    /** Resolved retired direction for control instructions. */
+    bool resolvedTaken = false;
+
     /** How many source registers are ready. */
     uint8_t readyRegs = 0;
 
@@ -528,6 +531,18 @@ class DynInst : public ExecContext, public RefCounted
     setPredTaken(bool predicted_taken)
     {
         instFlags[PredTaken] = predicted_taken;
+    }
+
+    bool
+    readResolvedTaken() const
+    {
+        return resolvedTaken;
+    }
+
+    void
+    setResolvedTaken(bool taken)
+    {
+        resolvedTaken = taken;
     }
 
     /** Returns whether the instruction mispredicted. */

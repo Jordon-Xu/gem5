@@ -521,8 +521,11 @@ class BaseCPU : public ClockedObject
      *
      * @param inst Instruction that just committed
      * @param pc PC of the instruction that just committed
+     * @param branch_taken True when the committed control instruction
+     * was dynamically taken
      */
-    virtual void probeInstCommit(const StaticInstPtr &inst, Addr pc);
+    virtual void probeInstCommit(const StaticInstPtr &inst, Addr pc,
+                                 bool branch_taken = false);
 
    protected:
     /**
@@ -553,6 +556,7 @@ class BaseCPU : public ClockedObject
     /** Retired branches (any type) */
     probing::PMUUPtr ppRetiredBranches;
     probing::PMUUPtr ppRetiredBranchesPC;
+    probing::PMUUPtr ppRetiredTakenBranchesPC;
 
     /** CPU cycle counter even if any thread Context is suspended*/
     probing::PMUUPtr ppAllCycles;

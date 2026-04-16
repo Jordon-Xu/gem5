@@ -516,8 +516,11 @@ BaseSimpleCPU::postExecute()
         traceData = NULL;
     }
 
+    const bool branchTaken =
+        curStaticInst->isControl() && t_info.thread->pcState().branching();
+
     // Call CPU instruction commit probes
-    probeInstCommit(curStaticInst, instAddr);
+    probeInstCommit(curStaticInst, instAddr, branchTaken);
 }
 
 void

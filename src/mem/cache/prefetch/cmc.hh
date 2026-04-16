@@ -1,7 +1,8 @@
 #ifndef __MEM_CACHE_PREFETCH_CMC_HH__
 #define __MEM_CACHE_PREFETCH_CMC_HH__
-//#include <boost/circular_buffer.hpp>
-//#include <boost/compute/detail/lru_cache.hpp>
+
+#include <algorithm>
+#include <limits>
 
 //Adapted from https://github.com/OpenXiangShan/GEM5/blob/xs-dev/src/mem/cache/prefetch
 
@@ -27,7 +28,7 @@ class CMCPrefetcher : public Queued
 {
     BaseTags* cachetags;
   public:
-  
+
     class StorageEntry;
     class RecordEntry
     {
@@ -35,7 +36,7 @@ class CMCPrefetcher : public Queued
             Addr pc;
             Addr addr;
             bool is_secure;
-            uint64_t branch_ctx; 
+            uint64_t branch_ctx;
             RecordEntry(Addr p, Addr a, bool s, uint64_t ctx)
                 : pc(p), addr(a), is_secure(s), branch_ctx(ctx) {}
             RecordEntry() : addr(0), is_secure(true), branch_ctx(0) {}
@@ -82,6 +83,8 @@ class CMCPrefetcher : public Queued
         std::vector<Addr> addresses;
         int refcnt = 0;
         uint64_t id = 0;
+
+        uint16_t ctx_tag = 0;
     };
 
 
@@ -91,15 +94,29 @@ class CMCPrefetcher : public Queued
   private:
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
+    const unsigned baseDegree;
     uint64_t acc_id = 1;
 
   /* branch context state */
   uint64_t currentBranchCtx = 0;
   bool ctxEnable;
+  bool ctxTakenOnly;
   unsigned ctxShift;
   unsigned ctxBits;
   uint64_t retiredBranchCount = 0;
   unsigned ctxUpdatePeriod;
+  const unsigned ctxMismatchDegree;
+
+    struct CMCStats : public statistics::Group
+    {
+        CMCStats(statistics::Group *parent);
+
+        statistics::Scalar primaryHits;
+        statistics::Scalar ctxMatches;
+        statistics::Scalar ctxMismatches;
+        statistics::Scalar pfCandidatesFromMatch;
+        statistics::Scalar pfCandidatesFromMismatch;
+    } statsCMC;
 
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
@@ -107,31 +124,44 @@ class CMCPrefetcher : public Queued
                            std::vector<AddrPriority> &addresses,
                            const CacheAccessor &cache_accessor) override;
 
-    /* first-step branch context hook */
+    /* Branch-context hook driven by retired-branch probes. */
     void notifyRetiredBranch(Addr branch_pc);
+    void notifyRetiredTakenBranch(Addr branch_pc);
     void addEventProbeRetiredInsts(SimObject *obj, const char *name);
     void addEventProbeRetiredBranches(SimObject *obj, const char *name);
+    void addEventProbeRetiredTakenBranches(SimObject *obj, const char *name);
 
   private:
     uint64_t hash(Addr addr, Addr pc, uint64_t ctx) {
-        uint64_t h = addr ^ (static_cast<uint64_t>(pc) << 8);
+        // Context is intentionally excluded from the primary key and used
+        // only as a secondary filter on top of baseline CMC.
+        (void)ctx;
+        return addr ^ (static_cast<uint64_t>(pc) << 8);
+    }
 
+    uint16_t compressCtx(uint64_t ctx) const
+    {
         if (!ctxEnable || ctxBits == 0) {
-            return h;
+            return 0;
         }
 
         const unsigned bits = std::min(ctxBits, 16u);
-        const uint64_t mask = (bits == 64) ? ~0ULL : ((1ULL << bits) - 1);
-        const uint64_t ctx_small = ctx & mask;
-
-        return h ^ (ctx_small << 1);
+        const uint64_t mask = (1ULL << bits) - 1;
+        return static_cast<uint16_t>(ctx & mask);
     }
-    // uint64_t hash(Addr addr, Addr pc, uint64_t ctx) {
-    //   uint64_t h = addr;
-    //   h ^= (static_cast<uint64_t>(pc) << 8);
-    //   h ^= (ctx + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
-    //   return h;
-    // }
+
+    unsigned allowedDegree(bool ctx_match, size_t available) const
+    {
+        const unsigned cappedAvailable = static_cast<unsigned>(
+            std::min<size_t>(available, std::numeric_limits<unsigned>::max()));
+        const unsigned fullDegree = std::min(baseDegree, cappedAvailable);
+
+        if (!ctxEnable || ctxBits == 0 || ctx_match) {
+            return fullDegree;
+        }
+
+        return std::min(ctxMismatchDegree, fullDegree);
+    }
 
     uint64_t getCurrentBranchCtx() const
     {
@@ -153,7 +183,22 @@ class CMCPrefetcher : public Queued
         CMCPrefetcher &parent;
     };
 
-std::vector<ProbeListenerPtr<PrefetchListenerPC>> listenersPC;
+    class PrefetchTakenListenerPC : public ProbeListenerArgBase<Addr>
+    {
+      public:
+        PrefetchTakenListenerPC(
+            CMCPrefetcher &_parent, const std::string &name)
+            : ProbeListenerArgBase<Addr>(name), parent(_parent)
+        {}
+
+        void notify(const Addr &pc) override;
+
+      private:
+        CMCPrefetcher &parent;
+    };
+
+    std::vector<ProbeListenerPtr<PrefetchListenerPC>> listenersPC;
+    std::vector<ProbeListenerPtr<PrefetchTakenListenerPC>> listenersTakenPC;
 
     static const int STACK_SIZE = 4;
     std::deque<RecordEntry> trigger;

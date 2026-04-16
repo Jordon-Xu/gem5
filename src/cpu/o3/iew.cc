@@ -1273,6 +1273,11 @@ IEW::executeInsts()
             instToCommit(inst);
         }
 
+        if (inst->isControl()) {
+            inst->setResolvedTaken(
+                inst->isUncondCtrl() || inst->pcState().branching());
+        }
+
         updateExeInstStats(inst);
 
         // Check if branch prediction was correct, if not then we need
