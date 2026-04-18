@@ -53,6 +53,7 @@
 #include "arch/generic/pcstate.hh"
 #include "base/statistics.hh"
 #include "cpu/activity.hh"
+#include "cpu/branch_context.hh"
 #include "cpu/base.hh"
 #include "cpu/o3/bac.hh"
 #include "cpu/o3/comm.hh"
@@ -574,6 +575,20 @@ class CPU : public BaseCPU
 
     /** Available thread ids in the cpu*/
     std::vector<ThreadID> tids;
+
+    struct ThreadBranchContextState
+    {
+        BranchContextSnapshot snapshot;
+        uint64_t totalBranches = 0;
+        uint64_t totalTakenBranches = 0;
+    };
+
+    std::vector<ThreadBranchContextState> branchContextState;
+
+  public:
+    void noteExecutedBranch(ThreadID tid, Addr pc, bool taken);
+    void attachBranchContextToRequest(ThreadID tid,
+                                      const RequestPtr &req) const;
 
     /** CPU pushRequest function, forwards request to LSQ. */
     Fault

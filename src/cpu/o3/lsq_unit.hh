@@ -407,6 +407,7 @@ class LSQUnit
     void schedule(Event& ev, Tick when);
 
     BaseMMU *getMMUPtr();
+    CPU *getCPU() const { return cpu; }
 
   private:
     /** Pointer to the CPU. */

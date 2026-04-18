@@ -23,13 +23,17 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     cachetags(p.cachetags),
     recorder(new Recorder(p.degree)),
     storage(p.storage_assoc, p.storage_entries, p.storage_indexing_policy,
-            p.storage_replacement_policy, StorageEntry()),
+            p.storage_replacement_policy,
+            StorageEntry(std::max(1u, p.ctx_variants))),
     baseDegree(p.degree),
     currentBranchCtx(0),
     ctxEnable(p.ctx_enable),
     ctxTakenOnly(p.ctx_taken_only),
+    ctxUseExecuteBranches(p.ctx_use_execute_branches),
+    ctxUseRequestSnapshot(p.ctx_use_request_snapshot),
     ctxShift(p.ctx_shift),
     ctxBits(p.ctx_bits),
+    ctxWindowSize(p.ctx_window_size),
     retiredBranchCount(0),
     ctxUpdatePeriod(p.ctx_update_period),
     ctxMismatchDegree(p.ctx_mismatch_degree),
@@ -50,7 +54,20 @@ CMCPrefetcher::CMCStats::CMCStats(statistics::Group *parent)
     ADD_STAT(pfCandidatesFromMatch, statistics::units::Count::get(),
              "prefetch candidates issued from context matches"),
     ADD_STAT(pfCandidatesFromMismatch, statistics::units::Count::get(),
-             "prefetch candidates issued from context mismatches")
+             "prefetch candidates issued from context mismatches"),
+    ADD_STAT(ctxVariantAllocations, statistics::units::Count::get(),
+             "number of context-stream slots allocated within a primary key"),
+    ADD_STAT(ctxVariantReplacements, statistics::units::Count::get(),
+             "number of context-stream slots replaced within a primary key"),
+    ADD_STAT(ctxSingleVariantMismatches, statistics::units::Count::get(),
+             "number of context mismatches on primary keys with one stream"),
+    ADD_STAT(ctxMultiVariantMismatches, statistics::units::Count::get(),
+             "number of context mismatches on primary keys with multiple "
+             "streams"),
+    ADD_STAT(ctxRequestSnapshots, statistics::units::Count::get(),
+             "number of accesses that used request-carried context"),
+    ADD_STAT(ctxGlobalFallbacks, statistics::units::Count::get(),
+             "number of accesses that fell back to global branch context")
 {
 }
 
@@ -61,22 +78,85 @@ CMCPrefetcher::updateBranchCtx(Addr branch_pc)
         return;
     }
 
-    const unsigned s = ctxShift & 63;
-
-    if (s == 0) {
-        currentBranchCtx ^= static_cast<uint64_t>(branch_pc);
-    } else {
-        currentBranchCtx =
-            (currentBranchCtx << s) ^
-            (currentBranchCtx >> (64 - s)) ^
-            static_cast<uint64_t>(branch_pc);
+    if (ctxWindowSize == 0) {
+        currentBranchCtx = mixBranchCtx(currentBranchCtx, branch_pc);
+        return;
     }
+
+    recentBranchPCs.push_back(branch_pc);
+    while (recentBranchPCs.size() > ctxWindowSize) {
+        recentBranchPCs.pop_front();
+    }
+
+    uint64_t new_ctx = 0;
+    for (auto recent_pc : recentBranchPCs) {
+        new_ctx = mixBranchCtx(new_ctx, recent_pc);
+    }
+    currentBranchCtx = new_ctx;
+}
+
+uint64_t
+CMCPrefetcher::getAccessBranchCtx(const PrefetchInfo &pfi) const
+{
+    if (!ctxEnable) {
+        return 0;
+    }
+
+    if (!ctxUseRequestSnapshot || !pfi.hasBranchContextSnapshot()) {
+        return getCurrentBranchCtx();
+    }
+
+    const auto &snapshot = pfi.getBranchContextSnapshot();
+    const uint64_t total_selected = ctxTakenOnly ?
+        pfi.getBranchContextTotalTakenBranches() :
+        pfi.getBranchContextTotalBranches();
+    const unsigned update_period = std::max(1u, ctxUpdatePeriod);
+
+    std::vector<Addr> selected_branches;
+    selected_branches.reserve(snapshot.size());
+
+    for (size_t i = 0; i < snapshot.size(); ++i) {
+        const auto &entry = snapshot[i];
+        if (ctxTakenOnly && !entry.taken) {
+            continue;
+        }
+        selected_branches.push_back(entry.pc);
+    }
+
+    if (selected_branches.empty()) {
+        return 0;
+    }
+
+    const uint64_t visible_selected = selected_branches.size();
+    const uint64_t base_ordinal = total_selected > visible_selected ?
+        total_selected - visible_selected : 0;
+    std::vector<Addr> contributing_branches;
+    contributing_branches.reserve(selected_branches.size());
+
+    for (size_t i = 0; i < selected_branches.size(); ++i) {
+        const uint64_t ordinal = base_ordinal + i + 1;
+        if ((ordinal % update_period) == 0) {
+            contributing_branches.push_back(selected_branches[i]);
+        }
+    }
+
+    uint64_t ctx = 0;
+    size_t start = 0;
+    if (ctxWindowSize != 0 && contributing_branches.size() > ctxWindowSize) {
+        start = contributing_branches.size() - ctxWindowSize;
+    }
+
+    for (size_t i = start; i < contributing_branches.size(); ++i) {
+        ctx = mixBranchCtx(ctx, contributing_branches[i]);
+    }
+
+    return ctx;
 }
 
 void
 CMCPrefetcher::notifyRetiredBranch(Addr branch_pc)
 {
-    if (!ctxEnable || ctxTakenOnly) {
+    if (!ctxEnable || ctxTakenOnly || ctxUseExecuteBranches) {
         return;
     }
 
@@ -93,7 +173,7 @@ CMCPrefetcher::notifyRetiredBranch(Addr branch_pc)
 void
 CMCPrefetcher::notifyRetiredTakenBranch(Addr branch_pc)
 {
-    if (!ctxEnable || !ctxTakenOnly) {
+    if (!ctxEnable || !ctxTakenOnly || ctxUseExecuteBranches) {
         return;
     }
 
@@ -108,6 +188,119 @@ CMCPrefetcher::notifyRetiredTakenBranch(Addr branch_pc)
 }
 
 void
+CMCPrefetcher::notifyExecutedBranch(Addr branch_pc)
+{
+    if (!ctxEnable || ctxTakenOnly || !ctxUseExecuteBranches) {
+        return;
+    }
+
+    retiredBranchCount++;
+    if ((retiredBranchCount % ctxUpdatePeriod) != 0) {
+        return;
+    }
+
+    updateBranchCtx(branch_pc);
+    DPRINTF(HWPrefetch, "CMC executed branch pc=%lx new_ctx=%lx\n",
+            branch_pc, currentBranchCtx);
+}
+
+void
+CMCPrefetcher::notifyExecutedTakenBranch(Addr branch_pc)
+{
+    if (!ctxEnable || !ctxTakenOnly || !ctxUseExecuteBranches) {
+        return;
+    }
+
+    retiredBranchCount++;
+    if ((retiredBranchCount % ctxUpdatePeriod) != 0) {
+        return;
+    }
+
+    updateBranchCtx(branch_pc);
+    DPRINTF(HWPrefetch, "CMC executed taken branch pc=%lx new_ctx=%lx\n",
+            branch_pc, currentBranchCtx);
+}
+
+CMCPrefetcher::ContextStream *
+CMCPrefetcher::findContextStream(StorageEntry *entry, uint16_t ctx_tag) const
+{
+    for (auto &variant : entry->variants) {
+        if (variant.valid && variant.ctxTag == ctx_tag) {
+            return &variant;
+        }
+    }
+
+    return nullptr;
+}
+
+CMCPrefetcher::ContextStream *
+CMCPrefetcher::selectIssueStream(StorageEntry *entry, uint16_t ctx_tag,
+                                 bool &ctx_match) const
+{
+    if (auto *exact = findContextStream(entry, ctx_tag)) {
+        ctx_match = true;
+        return exact;
+    }
+
+    ctx_match = false;
+    ContextStream *best = nullptr;
+    for (auto &variant : entry->variants) {
+        if (!variant.valid) {
+            continue;
+        }
+
+        if (!best || variant.confidence > best->confidence ||
+            (variant.confidence == best->confidence &&
+             variant.lastTouch > best->lastTouch)) {
+            best = &variant;
+        }
+    }
+
+    return best;
+}
+
+CMCPrefetcher::ContextStream *
+CMCPrefetcher::selectTrainingStream(StorageEntry *entry, uint16_t ctx_tag,
+                                    bool &allocated, bool &replaced)
+{
+    allocated = false;
+    replaced = false;
+
+    if (auto *exact = findContextStream(entry, ctx_tag)) {
+        return exact;
+    }
+
+    for (auto &variant : entry->variants) {
+        if (!variant.valid) {
+            allocated = true;
+            return &variant;
+        }
+    }
+
+    allocated = true;
+    replaced = true;
+    ContextStream *victim = &entry->variants.front();
+    for (auto &variant : entry->variants) {
+        if (variant.confidence < victim->confidence ||
+            (variant.confidence == victim->confidence &&
+             variant.lastTouch < victim->lastTouch)) {
+            victim = &variant;
+        }
+    }
+
+    return victim;
+}
+
+void
+CMCPrefetcher::touchContextStream(ContextStream &stream, bool reinforce)
+{
+    stream.lastTouch = ++ctxVariantClock;
+    if (reinforce && stream.confidence < std::numeric_limits<uint8_t>::max()) {
+        stream.confidence++;
+    }
+}
+
+void
 CMCPrefetcher::PrefetchListenerPC::notify(const Addr &pc)
 {
     parent.notifyRetiredBranch(pc);
@@ -117,6 +310,18 @@ void
 CMCPrefetcher::PrefetchTakenListenerPC::notify(const Addr &pc)
 {
     parent.notifyRetiredTakenBranch(pc);
+}
+
+void
+CMCPrefetcher::PrefetchExecutedListenerPC::notify(const Addr &pc)
+{
+    parent.notifyExecutedBranch(pc);
+}
+
+void
+CMCPrefetcher::PrefetchExecutedTakenListenerPC::notify(const Addr &pc)
+{
+    parent.notifyExecutedTakenBranch(pc);
 }
 
 void
@@ -143,6 +348,23 @@ CMCPrefetcher::addEventProbeRetiredTakenBranches(
 }
 
 void
+CMCPrefetcher::addEventProbeExecutedBranches(SimObject *obj, const char *name)
+{
+    listenersExecutedPC.push_back(
+        obj->getProbeManager()->connect<PrefetchExecutedListenerPC>(
+            *this, name));
+}
+
+void
+CMCPrefetcher::addEventProbeExecutedTakenBranches(
+    SimObject *obj, const char *name)
+{
+    listenersExecutedTakenPC.push_back(
+        obj->getProbeManager()->connect<PrefetchExecutedTakenListenerPC>(
+            *this, name));
+}
+
+void
 CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
                                  std::vector<AddrPriority> &addresses,
                                  const CacheAccessor &cache_accessor)
@@ -155,7 +377,14 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     Addr addr = pfi.getAddr();
     Addr block_addr = blockIndex(addr); // takes off 6 Least Significant Bits for cache line
     bool is_secure = pfi.isSecure();
-    uint64_t ctx = getCurrentBranchCtx();
+    const bool using_request_snapshot =
+        ctxEnable && ctxUseRequestSnapshot && pfi.hasBranchContextSnapshot();
+    uint64_t ctx = getAccessBranchCtx(pfi);
+    if (using_request_snapshot) {
+        statsCMC.ctxRequestSnapshots++;
+    } else {
+        statsCMC.ctxGlobalFallbacks++;
+    }
 
 
     // DPRINTF(HWPrefetch, "CMC train: pc: %lx, addr: %lx, ctx: %lx\n", pc, block_addr, ctx);
@@ -163,8 +392,10 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     auto lookup_key = hash(block_addr, pc, 0);
     const uint16_t cur_ctx_tag = compressCtx(ctx);
     DPRINTF(HWPrefetch,
-        "CMC lookup pc=%lx addr=%lx ctx=%lx ctx_tag=%x key=%lx\n",
-        pc, block_addr, ctx, cur_ctx_tag, lookup_key);
+        "CMC lookup pc=%lx addr=%lx ctx=%lx ctx_tag=%x key=%lx "
+        "request_snapshot=%d\n",
+        pc, block_addr, ctx, cur_ctx_tag, lookup_key,
+        using_request_snapshot);
 
 
     // Prefetch: check if there is a match
@@ -174,38 +405,52 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     if (match_entry) {
         statsCMC.primaryHits++;
         storage.accessEntry(match_entry);
-        ctx_match = (match_entry->ctx_tag == cur_ctx_tag);
+        ContextStream *match_stream =
+            selectIssueStream(match_entry, cur_ctx_tag, ctx_match);
+        const unsigned valid_variants = validVariantCount(match_entry);
+        const bool context_sensitive = (valid_variants > 1);
         if (ctx_match) {
             statsCMC.ctxMatches++;
         } else {
             statsCMC.ctxMismatches++;
-        }
-
-        DPRINTF(HWPrefetch,
-                "CMC primary hit pc=%lx addr=%lx entry_ctx=%x "
-                "cur_ctx=%x ctx_match=%d\n",
-                pc, block_addr, match_entry->ctx_tag, cur_ctx_tag,
-                ctx_match);
-
-        const unsigned issue_deg =
-            allowedDegree(ctx_match, match_entry->addresses.size());
-        DPRINTF(HWPrefetch,
-                "Storage hit, trigger pc=%lx addr=%lx issue_deg=%u "
-                "ctx_match=%d\n",
-                pc, block_addr, issue_deg, ctx_match);
-
-        unsigned issued = 0;
-        for (auto pf_addr: match_entry->addresses) {
-            if (issued >= issue_deg) {
-                break;
+            if (context_sensitive) {
+                statsCMC.ctxMultiVariantMismatches++;
+            } else {
+                statsCMC.ctxSingleVariantMismatches++;
             }
-            addresses.push_back(AddrPriority(pf_addr, 0));
-            issued++;
         }
-        if (ctx_match) {
-            statsCMC.pfCandidatesFromMatch += issued;
-        } else {
-            statsCMC.pfCandidatesFromMismatch += issued;
+
+        if (match_stream) {
+            if (ctx_match) {
+                touchContextStream(*match_stream, true);
+            }
+            DPRINTF(HWPrefetch,
+                    "CMC primary hit pc=%lx addr=%lx stream_ctx=%x "
+                    "cur_ctx=%x ctx_match=%d conf=%u valid_variants=%u\n",
+                    pc, block_addr, match_stream->ctxTag, cur_ctx_tag,
+                    ctx_match, match_stream->confidence, valid_variants);
+
+            const unsigned issue_deg =
+                allowedDegree(ctx_match, match_stream->addresses.size());
+            DPRINTF(HWPrefetch,
+                    "Storage hit, trigger pc=%lx addr=%lx issue_deg=%u "
+                    "ctx_match=%d context_sensitive=%d\n",
+                    pc, block_addr, issue_deg, ctx_match,
+                    context_sensitive);
+
+            unsigned issued = 0;
+            for (auto pf_addr: match_stream->addresses) {
+                if (issued >= issue_deg) {
+                    break;
+                }
+                addresses.push_back(AddrPriority(pf_addr, 0));
+                issued++;
+            }
+            if (ctx_match) {
+                statsCMC.pfCandidatesFromMatch += issued;
+            } else {
+                statsCMC.pfCandidatesFromMismatch += issued;
+            }
         }
     }
 
@@ -233,8 +478,8 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 
     /* 2. Train entry */
     if (do_training) {
-        bool trained = recorder->train_entry(addr, is_secure, &finished);
         auto &trigger_head = trigger.front();
+        bool trained = recorder->train_entry(addr, is_secure, &finished);
         if (trained) {
             //printf("trained %x\n", block_addr);
         }
@@ -252,29 +497,40 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
                 trigger_head.branch_ctx, train_ctx_tag, train_key);
             StorageEntry *entry = storage.findEntry(
                 train_key, trigger_head.is_secure);
-            if (entry) {
-                // storage.accessEntry(entry); do not update replacement
-                DPRINTF(HWPrefetch,
-                        "CMC: enter the same trigger, pc: %lx, addr: %lx, "
-                        "ctx: %lx\n",
-                        trigger_head.pc, trigger_head.addr,
-                        trigger_head.branch_ctx);
-                entry->addresses = recorder->entries;
-                entry->ctx_tag = train_ctx_tag;
-
-
-            } else {
+            if (!entry) {
                 entry = storage.findVictim(train_key);
-                entry->addresses = recorder->entries;
-                entry->ctx_tag = train_ctx_tag;
-
-
+                entry->clearStreams();
                 storage.insertEntry(
                     train_key,
                     trigger_head.is_secure,
                     entry
                 );
             }
+
+            bool allocated = false;
+            bool replaced = false;
+            ContextStream *stream = selectTrainingStream(
+                entry, train_ctx_tag, allocated, replaced);
+            if (allocated) {
+                statsCMC.ctxVariantAllocations++;
+            }
+            if (replaced) {
+                statsCMC.ctxVariantReplacements++;
+            }
+
+            DPRINTF(HWPrefetch,
+                    "CMC train stream pc=%lx addr=%lx train_ctx=%x "
+                    "allocated=%d replaced=%d\n",
+                    trigger_head.pc, trigger_head.addr, train_ctx_tag,
+                    allocated, replaced);
+
+            stream->valid = true;
+            stream->ctxTag = train_ctx_tag;
+            if (allocated) {
+                stream->confidence = 0;
+            }
+            stream->addresses = recorder->entries;
+            touchContextStream(*stream, true);
 
             for (auto addr: recorder->entries) {
                 DPRINTF(HWPrefetch, "entry addr: 0x%lx\n",
@@ -359,11 +615,18 @@ CMCPrefetcher::StorageEntry::match(Addr tag, bool is_secure) const
 }
 
 void
+CMCPrefetcher::StorageEntry::clearStreams()
+{
+    for (auto &variant : variants) {
+        variant.invalidate();
+    }
+}
+
+void
 CMCPrefetcher::StorageEntry::invalidate()
 {
     TaggedEntry::invalidate();
-    addresses.clear();
-    ctx_tag = 0;
+    clearStreams();
 }
 
 

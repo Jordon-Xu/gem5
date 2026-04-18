@@ -1082,10 +1082,12 @@ LSQ::LSQRequest::addReq(Addr addr, unsigned size,
                                                    byte_enable.end());
 
     if (inactive_tail_size != byte_enable.size()) {
-        auto req = new Request(
+        RequestPtr req = std::make_shared<Request>(
                 addr, size-inactive_tail_size, _flags, _inst->requestorId(),
                 _inst->pcState().instAddr(), _inst->contextId(),
                 std::move(_amo_op));
+
+        _port.getCPU()->attachBranchContextToRequest(_inst->threadNumber, req);
 
         req->setByteEnable(
                 std::vector<bool>(byte_enable.begin(),

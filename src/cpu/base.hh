@@ -527,6 +527,15 @@ class BaseCPU : public ClockedObject
     virtual void probeInstCommit(const StaticInstPtr &inst, Addr pc,
                                  bool branch_taken = false);
 
+    /**
+     * Helper method to trigger PMU probes for an executed instruction.
+     *
+     * Used by the O3 core to expose branch resolution timing that is closer
+     * to load/store address generation than commit-time probes.
+     */
+    virtual void probeInstExecute(const StaticInstPtr &inst, Addr pc,
+                                  bool branch_taken = false);
+
    protected:
     /**
      * Helper method to instantiate probe points belonging to this
@@ -557,6 +566,10 @@ class BaseCPU : public ClockedObject
     probing::PMUUPtr ppRetiredBranches;
     probing::PMUUPtr ppRetiredBranchesPC;
     probing::PMUUPtr ppRetiredTakenBranchesPC;
+
+    /** Executed/resolved branches (any type) */
+    probing::PMUUPtr ppExecutedBranchesPC;
+    probing::PMUUPtr ppExecutedTakenBranchesPC;
 
     /** CPU cycle counter even if any thread Context is suspended*/
     probing::PMUUPtr ppAllCycles;

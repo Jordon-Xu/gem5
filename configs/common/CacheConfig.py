@@ -171,6 +171,20 @@ def config_cache(options, system):
                     dcache.prefetcher.listenFromProbeRetiredTakenBranches(
                         system.cpu[i]
                     )
+                if hasattr(
+                    dcache.prefetcher,
+                    "listenFromProbeExecutedBranches",
+                ):
+                    dcache.prefetcher.listenFromProbeExecutedBranches(
+                        system.cpu[i]
+                    )
+                if hasattr(
+                    dcache.prefetcher,
+                    "listenFromProbeExecutedTakenBranches",
+                ):
+                    dcache.prefetcher.listenFromProbeExecutedTakenBranches(
+                        system.cpu[i]
+                    )
 
             # If we are using ISA.X86 or ISA.RISCV, we set walker caches.
             if ObjectList.cpu_list.get_isa(options.cpu_type) in [

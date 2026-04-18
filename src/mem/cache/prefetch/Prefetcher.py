@@ -713,6 +713,24 @@ class HWPProbeEventRetiredTakenBranches(HWPProbeEvent):
                 )
 
 
+class HWPProbeEventExecutedBranches(HWPProbeEvent):
+    def register(self):
+        if self.obj:
+            for name in self.names:
+                self.prefetcher.getCCObject().addEventProbeExecutedBranches(
+                    self.obj.getCCObject(), name
+                )
+
+
+class HWPProbeEventExecutedTakenBranches(HWPProbeEvent):
+    def register(self):
+        if self.obj:
+            for name in self.names:
+                self.prefetcher.getCCObject().addEventProbeExecutedTakenBranches(
+                    self.obj.getCCObject(), name
+                )
+
+
 class PIFPrefetcher(QueuedPrefetcher):
     type = "PIFPrefetcher"
     cxx_class = "gem5::prefetch::PIF"
@@ -817,6 +835,16 @@ class CMCPrefetcher(QueuedPrefetcher):
     ctx_taken_only = Param.Bool(
         False, "Update CMC context from taken retired branches only"
     )
+    ctx_use_execute_branches = Param.Bool(
+        False,
+        "Use execute-time branch probes instead of retired-branch probes "
+        "when available",
+    )
+    ctx_use_request_snapshot = Param.Bool(
+        True,
+        "Prefer access-time request-carried branch context snapshots when "
+        "available",
+    )
     ctx_shift = Param.Unsigned(
         5, "Rotate/XOR shift used to update the retired-PC context hash"
     )
@@ -836,6 +864,16 @@ class CMCPrefetcher(QueuedPrefetcher):
         1, "Number of low-order bits kept in the secondary CMC context tag"
     )
 
+    ctx_variants = Param.Unsigned(
+        2, "Number of context-conditioned streams stored per primary key"
+    )
+
+    ctx_window_size = Param.Unsigned(
+        0,
+        "Number of recent selected branches kept in the CMC context window; "
+        "0 keeps the original unbounded rolling hash",
+    )
+
     ctx_update_period = Param.Unsigned(
         4, "Update branch context once every N retired branches"
     )
@@ -848,6 +886,8 @@ class CMCPrefetcher(QueuedPrefetcher):
         PyBindMethod("addEventProbeRetiredInsts"),
         PyBindMethod("addEventProbeRetiredBranches"),
         PyBindMethod("addEventProbeRetiredTakenBranches"),
+        PyBindMethod("addEventProbeExecutedBranches"),
+        PyBindMethod("addEventProbeExecutedTakenBranches"),
     ]
 
     def listenFromProbeRetiredInstructions(self, simObj):
@@ -870,6 +910,22 @@ class CMCPrefetcher(QueuedPrefetcher):
         self.addEvent(
             HWPProbeEventRetiredTakenBranches(
                 self, simObj, "RetiredTakenBranchesPC"
+            )
+        )
+
+    def listenFromProbeExecutedBranches(self, simObj):
+        if not isinstance(simObj, SimObject):
+            raise TypeError("argument must be of SimObject type")
+        self.addEvent(
+            HWPProbeEventExecutedBranches(self, simObj, "ExecutedBranchesPC")
+        )
+
+    def listenFromProbeExecutedTakenBranches(self, simObj):
+        if not isinstance(simObj, SimObject):
+            raise TypeError("argument must be of SimObject type")
+        self.addEvent(
+            HWPProbeEventExecutedTakenBranches(
+                self, simObj, "ExecutedTakenBranchesPC"
             )
         )
 

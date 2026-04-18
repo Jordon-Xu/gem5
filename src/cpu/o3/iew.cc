@@ -1276,6 +1276,12 @@ IEW::executeInsts()
         if (inst->isControl()) {
             inst->setResolvedTaken(
                 inst->isUncondCtrl() || inst->pcState().branching());
+            cpu->noteExecutedBranch(inst->threadNumber,
+                                    inst->pcState().instAddr(),
+                                    inst->readResolvedTaken());
+            cpu->probeInstExecute(inst->staticInst,
+                                  inst->pcState().instAddr(),
+                                  inst->readResolvedTaken());
         }
 
         updateExeInstStats(inst);

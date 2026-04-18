@@ -61,11 +61,20 @@ Base::PrefetchInfo::PrefetchInfo(PacketPtr pkt, Addr addr, bool miss)
   : address(addr), pc(pkt->req->hasPC() ? pkt->req->getPC() : 0),
     requestorId(pkt->req->requestorId()), validPC(pkt->req->hasPC()),
     secure(pkt->isSecure()), size(pkt->req->getSize()), write(pkt->isWrite()),
-    paddress(pkt->req->getPaddr()), cacheMiss(miss)
+    paddress(pkt->req->getPaddr()), cacheMiss(miss), data(nullptr),
+    branchContext(), validBranchContext(false), branchContextTotalBranches(0),
+    branchContextTotalTakenBranches(0)
 {
+    if (auto branch_ctx =
+            pkt->req->getExtension<BranchContextExtension>()) {
+        branchContext = branch_ctx->snapshot();
+        validBranchContext = true;
+        branchContextTotalBranches = branch_ctx->branchCount();
+        branchContextTotalTakenBranches = branch_ctx->takenBranchCount();
+    }
+
     unsigned int req_size = pkt->req->getSize();
     if ((!write && miss) || !pkt->hasData()) {
-        data = nullptr;
     } else {
         data = new uint8_t[req_size];
         Addr offset = pkt->req->getPaddr() - pkt->getAddr();
@@ -77,7 +86,10 @@ Base::PrefetchInfo::PrefetchInfo(PrefetchInfo const &pfi, Addr addr)
   : address(addr), pc(pfi.pc), requestorId(pfi.requestorId),
     validPC(pfi.validPC), secure(pfi.secure), size(pfi.size),
     write(pfi.write), paddress(pfi.paddress), cacheMiss(pfi.cacheMiss),
-    data(nullptr)
+    data(nullptr), branchContext(pfi.branchContext),
+    validBranchContext(pfi.validBranchContext),
+    branchContextTotalBranches(pfi.branchContextTotalBranches),
+    branchContextTotalTakenBranches(pfi.branchContextTotalTakenBranches)
 {
 }
 

@@ -52,6 +52,7 @@
 #include "base/compiler.hh"
 #include "base/statistics.hh"
 #include "base/types.hh"
+#include "cpu/branch_context.hh"
 #include "mem/cache/cache_probe_arg.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
@@ -131,6 +132,11 @@ class Base : public ClockedObject
         bool cacheMiss;
         /** Pointer to the associated request data */
         uint8_t *data;
+        /** Optional branch-context snapshot carried by the request */
+        BranchContextSnapshot branchContext;
+        bool validBranchContext;
+        uint64_t branchContextTotalBranches;
+        uint64_t branchContextTotalTakenBranches;
 
       public:
         /**
@@ -214,6 +220,30 @@ class Base : public ClockedObject
         bool isCacheMiss() const
         {
             return cacheMiss;
+        }
+
+        bool hasBranchContextSnapshot() const
+        {
+            return validBranchContext;
+        }
+
+        const BranchContextSnapshot &
+        getBranchContextSnapshot() const
+        {
+            assert(hasBranchContextSnapshot());
+            return branchContext;
+        }
+
+        uint64_t getBranchContextTotalBranches() const
+        {
+            assert(hasBranchContextSnapshot());
+            return branchContextTotalBranches;
+        }
+
+        uint64_t getBranchContextTotalTakenBranches() const
+        {
+            assert(hasBranchContextSnapshot());
+            return branchContextTotalTakenBranches;
         }
 
         /**

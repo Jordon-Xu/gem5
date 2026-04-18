@@ -73,18 +73,38 @@ class CMCPrefetcher : public Queued
     class StorageEntry : public TaggedEntry
     {
       public:
+        struct ContextStream
+        {
+            bool valid = false;
+            uint16_t ctxTag = 0;
+            uint8_t confidence = 0;
+            uint64_t lastTouch = 0;
+            std::vector<Addr> addresses;
+
+            void
+            invalidate()
+            {
+                valid = false;
+                ctxTag = 0;
+                confidence = 0;
+                lastTouch = 0;
+                addresses.clear();
+            }
+        };
+
         using TaggedEntry::insert; // 解除 “hidden virtual” warning
+
+        explicit StorageEntry(unsigned variantCount = 1)
+            : variants(std::max(1u, variantCount))
+        {}
 
         void insert(Addr tag, bool is_secure);
         bool match(Addr tag, bool is_secure) const;
 
         void invalidate() override;
+        void clearStreams();
 
-        std::vector<Addr> addresses;
-        int refcnt = 0;
-        uint64_t id = 0;
-
-        uint16_t ctx_tag = 0;
+        std::vector<ContextStream> variants;
     };
 
 
@@ -95,14 +115,17 @@ class CMCPrefetcher : public Queued
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
     const unsigned baseDegree;
-    uint64_t acc_id = 1;
+    uint64_t ctxVariantClock = 0;
 
   /* branch context state */
   uint64_t currentBranchCtx = 0;
   bool ctxEnable;
   bool ctxTakenOnly;
+  bool ctxUseExecuteBranches;
+  bool ctxUseRequestSnapshot;
   unsigned ctxShift;
   unsigned ctxBits;
+  unsigned ctxWindowSize;
   uint64_t retiredBranchCount = 0;
   unsigned ctxUpdatePeriod;
   const unsigned ctxMismatchDegree;
@@ -116,6 +139,12 @@ class CMCPrefetcher : public Queued
         statistics::Scalar ctxMismatches;
         statistics::Scalar pfCandidatesFromMatch;
         statistics::Scalar pfCandidatesFromMismatch;
+        statistics::Scalar ctxVariantAllocations;
+        statistics::Scalar ctxVariantReplacements;
+        statistics::Scalar ctxSingleVariantMismatches;
+        statistics::Scalar ctxMultiVariantMismatches;
+        statistics::Scalar ctxRequestSnapshots;
+        statistics::Scalar ctxGlobalFallbacks;
     } statsCMC;
 
   public:
@@ -127,9 +156,13 @@ class CMCPrefetcher : public Queued
     /* Branch-context hook driven by retired-branch probes. */
     void notifyRetiredBranch(Addr branch_pc);
     void notifyRetiredTakenBranch(Addr branch_pc);
+    void notifyExecutedBranch(Addr branch_pc);
+    void notifyExecutedTakenBranch(Addr branch_pc);
     void addEventProbeRetiredInsts(SimObject *obj, const char *name);
     void addEventProbeRetiredBranches(SimObject *obj, const char *name);
     void addEventProbeRetiredTakenBranches(SimObject *obj, const char *name);
+    void addEventProbeExecutedBranches(SimObject *obj, const char *name);
+    void addEventProbeExecutedTakenBranches(SimObject *obj, const char *name);
 
   private:
     uint64_t hash(Addr addr, Addr pc, uint64_t ctx) {
@@ -168,7 +201,35 @@ class CMCPrefetcher : public Queued
         return ctxEnable ? currentBranchCtx : 0;
     }
 
+    uint64_t getAccessBranchCtx(const PrefetchInfo &pfi) const;
+
+    uint64_t mixBranchCtx(uint64_t ctx, Addr branch_pc) const
+    {
+        const unsigned s = ctxShift & 63;
+
+        if (s == 0) {
+            return ctx ^ static_cast<uint64_t>(branch_pc);
+        }
+
+        return (ctx << s) ^ (ctx >> (64 - s)) ^
+               static_cast<uint64_t>(branch_pc);
+    }
+
     void updateBranchCtx(Addr branch_pc);
+    using ContextStream = StorageEntry::ContextStream;
+
+    unsigned validVariantCount(const StorageEntry *entry) const
+    {
+        return std::count_if(entry->variants.begin(), entry->variants.end(),
+            [](const ContextStream &variant) { return variant.valid; });
+    }
+
+    ContextStream *findContextStream(StorageEntry *entry, uint16_t ctx_tag) const;
+    ContextStream *selectIssueStream(StorageEntry *entry, uint16_t ctx_tag,
+                                     bool &ctx_match) const;
+    ContextStream *selectTrainingStream(StorageEntry *entry, uint16_t ctx_tag,
+                                        bool &allocated, bool &replaced);
+    void touchContextStream(ContextStream &stream, bool reinforce);
 
     class PrefetchListenerPC : public ProbeListenerArgBase<Addr>
     {
@@ -197,9 +258,42 @@ class CMCPrefetcher : public Queued
         CMCPrefetcher &parent;
     };
 
+    class PrefetchExecutedListenerPC : public ProbeListenerArgBase<Addr>
+    {
+      public:
+        PrefetchExecutedListenerPC(
+            CMCPrefetcher &_parent, const std::string &name)
+            : ProbeListenerArgBase<Addr>(name), parent(_parent)
+        {}
+
+        void notify(const Addr &pc) override;
+
+      private:
+        CMCPrefetcher &parent;
+    };
+
+    class PrefetchExecutedTakenListenerPC : public ProbeListenerArgBase<Addr>
+    {
+      public:
+        PrefetchExecutedTakenListenerPC(
+            CMCPrefetcher &_parent, const std::string &name)
+            : ProbeListenerArgBase<Addr>(name), parent(_parent)
+        {}
+
+        void notify(const Addr &pc) override;
+
+      private:
+        CMCPrefetcher &parent;
+    };
+
     std::vector<ProbeListenerPtr<PrefetchListenerPC>> listenersPC;
     std::vector<ProbeListenerPtr<PrefetchTakenListenerPC>> listenersTakenPC;
+    std::vector<ProbeListenerPtr<PrefetchExecutedListenerPC>>
+        listenersExecutedPC;
+    std::vector<ProbeListenerPtr<PrefetchExecutedTakenListenerPC>>
+        listenersExecutedTakenPC;
 
+    std::deque<Addr> recentBranchPCs;
     static const int STACK_SIZE = 4;
     std::deque<RecordEntry> trigger;
     // RecordEntry trigger_stack[STACK_SIZE];

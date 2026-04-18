@@ -403,6 +403,8 @@ BaseCPU::regProbePoints()
     ppRetiredBranches = pmuProbePoint("RetiredBranches");
     ppRetiredBranchesPC = pmuProbePoint("RetiredBranchesPC");
     ppRetiredTakenBranchesPC = pmuProbePoint("RetiredTakenBranchesPC");
+    ppExecutedBranchesPC = pmuProbePoint("ExecutedBranchesPC");
+    ppExecutedTakenBranchesPC = pmuProbePoint("ExecutedTakenBranchesPC");
 
     ppSleeping = new ProbePointArg<bool>(this->getProbeManager(),
                                          "Sleeping");
@@ -428,6 +430,19 @@ BaseCPU::probeInstCommit(const StaticInstPtr &inst, Addr pc, bool branch_taken)
         if (branch_taken) {
             ppRetiredTakenBranchesPC->notify(pc);
         }
+    }
+}
+
+void
+BaseCPU::probeInstExecute(const StaticInstPtr &inst, Addr pc, bool branch_taken)
+{
+    if (!inst->isControl()) {
+        return;
+    }
+
+    ppExecutedBranchesPC->notify(pc);
+    if (branch_taken) {
+        ppExecutedTakenBranchesPC->notify(pc);
     }
 }
 

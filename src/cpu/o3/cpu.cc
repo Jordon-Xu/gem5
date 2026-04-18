@@ -115,6 +115,8 @@ CPU::CPU(const BaseO3CPUParams &params)
       lastRunningCycle(curCycle()),
       cpuStats(this)
 {
+    branchContextState.resize(numThreads);
+
     fatal_if(FullSystem && params.numThreads > 1,
             "SMT is not supported in O3 in full system mode currently.");
 
@@ -320,6 +322,34 @@ CPU::CPU(const BaseO3CPUParams &params)
         fatal("O3CPU %s has no interrupt controller.\n"
               "Ensure createInterruptController() is called.\n", name());
     }
+}
+
+void
+CPU::noteExecutedBranch(ThreadID tid, Addr pc, bool taken)
+{
+    if (tid >= branchContextState.size()) {
+        return;
+    }
+
+    auto &state = branchContextState[tid];
+    state.snapshot.push(pc, taken);
+    state.totalBranches++;
+    if (taken) {
+        state.totalTakenBranches++;
+    }
+}
+
+void
+CPU::attachBranchContextToRequest(ThreadID tid, const RequestPtr &req) const
+{
+    if (!req || tid >= branchContextState.size()) {
+        return;
+    }
+
+    const auto &state = branchContextState[tid];
+    auto ext = std::make_shared<BranchContextExtension>(
+        state.snapshot, state.totalBranches, state.totalTakenBranches);
+    req->setExtension(ext);
 }
 
 void
