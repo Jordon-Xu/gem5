@@ -75,6 +75,25 @@ def _get_cache_opts(level, options):
     return opts
 
 
+def _register_branch_prefetcher_probes(cache, cpu):
+    if (
+        not hasattr(cache, "prefetcher")
+        or cache.prefetcher == NULL
+        or not hasattr(cache.prefetcher, "listenFromProbeRetiredBranches")
+        or not hasattr(cache.prefetcher, "ctx_enable")
+        or not cache.prefetcher.ctx_enable
+    ):
+        return
+
+    cache.prefetcher.listenFromProbeRetiredBranches(cpu)
+    if hasattr(cache.prefetcher, "listenFromProbeRetiredTakenBranches"):
+        cache.prefetcher.listenFromProbeRetiredTakenBranches(cpu)
+    if hasattr(cache.prefetcher, "listenFromProbeExecutedBranches"):
+        cache.prefetcher.listenFromProbeExecutedBranches(cpu)
+    if hasattr(cache.prefetcher, "listenFromProbeExecutedTakenBranches"):
+        cache.prefetcher.listenFromProbeExecutedTakenBranches(cpu)
+
+
 def config_cache(options, system):
     if options.external_memory_system and (options.caches or options.l2cache):
         print("External caches and internal caches are exclusive options.\n")
@@ -152,39 +171,7 @@ def config_cache(options, system):
             # taken-only stream as well when supported and let the final
             # prefetcher params decide which one is consumed. This avoids
             # mismatches with late --param overrides.
-            if (
-                hasattr(dcache, "prefetcher")
-                and dcache.prefetcher != NULL
-                and hasattr(
-                    dcache.prefetcher,
-                    # "listenFromProbeRetiredInstructions"
-                    "listenFromProbeRetiredBranches",
-                )
-                and hasattr(dcache.prefetcher, "ctx_enable")
-                and dcache.prefetcher.ctx_enable
-            ):
-                dcache.prefetcher.listenFromProbeRetiredBranches(system.cpu[i])
-                if hasattr(
-                    dcache.prefetcher,
-                    "listenFromProbeRetiredTakenBranches",
-                ):
-                    dcache.prefetcher.listenFromProbeRetiredTakenBranches(
-                        system.cpu[i]
-                    )
-                if hasattr(
-                    dcache.prefetcher,
-                    "listenFromProbeExecutedBranches",
-                ):
-                    dcache.prefetcher.listenFromProbeExecutedBranches(
-                        system.cpu[i]
-                    )
-                if hasattr(
-                    dcache.prefetcher,
-                    "listenFromProbeExecutedTakenBranches",
-                ):
-                    dcache.prefetcher.listenFromProbeExecutedTakenBranches(
-                        system.cpu[i]
-                    )
+            _register_branch_prefetcher_probes(dcache, system.cpu[i])
 
             # If we are using ISA.X86 or ISA.RISCV, we set walker caches.
             if ObjectList.cpu_list.get_isa(options.cpu_type) in [

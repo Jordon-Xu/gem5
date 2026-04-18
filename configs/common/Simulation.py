@@ -42,6 +42,7 @@ from os import getcwd
 from os.path import join as joinpath
 
 from common import (
+    CacheConfig,
     CpuConfig,
     ObjectList,
 )
@@ -552,6 +553,11 @@ def run(options, root, testsys, cpu_class):
             CpuConfig.config_etrace(cpu_class, switch_cpus, options)
 
         testsys.switch_cpus = switch_cpus
+        if options.caches:
+            for i in range(np):
+                CacheConfig._register_branch_prefetcher_probes(
+                    testsys.cpu[i].dcache, switch_cpus[i]
+                )
         switch_cpu_list = [(testsys.cpu[i], switch_cpus[i]) for i in range(np)]
 
     if options.repeat_switch:
