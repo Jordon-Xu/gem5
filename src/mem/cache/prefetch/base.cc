@@ -63,7 +63,9 @@ Base::PrefetchInfo::PrefetchInfo(PacketPtr pkt, Addr addr, bool miss)
     secure(pkt->isSecure()), size(pkt->req->getSize()), write(pkt->isWrite()),
     paddress(pkt->req->getPaddr()), cacheMiss(miss), data(nullptr),
     branchContext(), validBranchContext(false), branchContextTotalBranches(0),
-    branchContextTotalTakenBranches(0)
+    branchContextTotalTakenBranches(0), loadPcBranchContext(),
+    validLoadPcBranchContext(false), loadPcBranchContextTotalBranches(0),
+    loadPcBranchContextTotalTakenBranches(0)
 {
     if (auto branch_ctx =
             pkt->req->getExtension<BranchContextExtension>()) {
@@ -71,6 +73,15 @@ Base::PrefetchInfo::PrefetchInfo(PacketPtr pkt, Addr addr, bool miss)
         validBranchContext = true;
         branchContextTotalBranches = branch_ctx->branchCount();
         branchContextTotalTakenBranches = branch_ctx->takenBranchCount();
+
+        if (branch_ctx->hasLoadPcSnapshot()) {
+            loadPcBranchContext = branch_ctx->loadPcSnapshot();
+            validLoadPcBranchContext = true;
+            loadPcBranchContextTotalBranches =
+                branch_ctx->loadPcBranchCount();
+            loadPcBranchContextTotalTakenBranches =
+                branch_ctx->loadPcTakenBranchCount();
+        }
     }
 
     unsigned int req_size = pkt->req->getSize();
@@ -89,7 +100,12 @@ Base::PrefetchInfo::PrefetchInfo(PrefetchInfo const &pfi, Addr addr)
     data(nullptr), branchContext(pfi.branchContext),
     validBranchContext(pfi.validBranchContext),
     branchContextTotalBranches(pfi.branchContextTotalBranches),
-    branchContextTotalTakenBranches(pfi.branchContextTotalTakenBranches)
+    branchContextTotalTakenBranches(pfi.branchContextTotalTakenBranches),
+    loadPcBranchContext(pfi.loadPcBranchContext),
+    validLoadPcBranchContext(pfi.validLoadPcBranchContext),
+    loadPcBranchContextTotalBranches(pfi.loadPcBranchContextTotalBranches),
+    loadPcBranchContextTotalTakenBranches(
+        pfi.loadPcBranchContextTotalTakenBranches)
 {
 }
 

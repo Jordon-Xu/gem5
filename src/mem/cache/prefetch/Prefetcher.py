@@ -845,6 +845,22 @@ class CMCPrefetcher(QueuedPrefetcher):
         "Prefer access-time request-carried branch context snapshots when "
         "available",
     )
+    ctx_use_load_pc_snapshot = Param.Bool(
+        False,
+        "Use the taken-branch window between two executions of the same "
+        "load PC when request-carried context is enabled",
+    )
+    ctx_load_pc_min_branches = Param.Unsigned(
+        2,
+        "Minimum number of branch updates required before using the "
+        "same-load-PC snapshot; otherwise fall back to the global request "
+        "snapshot",
+    )
+    ctx_load_pc_multivariant_only = Param.Bool(
+        True,
+        "Only use same-load-PC snapshots for primary keys that already have "
+        "multiple trained stream variants",
+    )
     ctx_shift = Param.Unsigned(
         5, "Rotate/XOR shift used to update the retired-PC context hash"
     )

@@ -78,10 +78,18 @@ class BranchContextExtension : public Extension<Request, BranchContextExtension>
 
     BranchContextExtension(const BranchContextSnapshot &snapshot,
                            uint64_t total_branches,
-                           uint64_t total_taken_branches)
+                           uint64_t total_taken_branches,
+                           const BranchContextSnapshot &load_pc_snapshot = {},
+                           uint64_t load_pc_total_branches = 0,
+                           uint64_t load_pc_total_taken_branches = 0,
+                           bool valid_load_pc_snapshot = false)
         : contextSnapshot(snapshot),
           totalBranches(total_branches),
-          totalTakenBranches(total_taken_branches)
+          totalTakenBranches(total_taken_branches),
+          loadPcContextSnapshot(load_pc_snapshot),
+          loadPcTotalBranches(load_pc_total_branches),
+          loadPcTotalTakenBranches(load_pc_total_taken_branches),
+          validLoadPcContext(valid_load_pc_snapshot)
     {}
 
     std::unique_ptr<ExtensionBase>
@@ -108,10 +116,41 @@ class BranchContextExtension : public Extension<Request, BranchContextExtension>
         return totalTakenBranches;
     }
 
+    bool
+    hasLoadPcSnapshot() const
+    {
+        return validLoadPcContext;
+    }
+
+    const BranchContextSnapshot &
+    loadPcSnapshot() const
+    {
+        assert(hasLoadPcSnapshot());
+        return loadPcContextSnapshot;
+    }
+
+    uint64_t
+    loadPcBranchCount() const
+    {
+        assert(hasLoadPcSnapshot());
+        return loadPcTotalBranches;
+    }
+
+    uint64_t
+    loadPcTakenBranchCount() const
+    {
+        assert(hasLoadPcSnapshot());
+        return loadPcTotalTakenBranches;
+    }
+
   private:
     BranchContextSnapshot contextSnapshot;
     uint64_t totalBranches = 0;
     uint64_t totalTakenBranches = 0;
+    BranchContextSnapshot loadPcContextSnapshot;
+    uint64_t loadPcTotalBranches = 0;
+    uint64_t loadPcTotalTakenBranches = 0;
+    bool validLoadPcContext = false;
 };
 
 } // namespace gem5

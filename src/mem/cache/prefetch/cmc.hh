@@ -2,6 +2,7 @@
 #define __MEM_CACHE_PREFETCH_CMC_HH__
 
 #include <algorithm>
+#include <deque>
 #include <limits>
 
 //Adapted from https://github.com/OpenXiangShan/GEM5/blob/xs-dev/src/mem/cache/prefetch
@@ -123,6 +124,9 @@ class CMCPrefetcher : public Queued
   bool ctxTakenOnly;
   bool ctxUseExecuteBranches;
   bool ctxUseRequestSnapshot;
+  bool ctxUseLoadPcSnapshot;
+  const unsigned ctxLoadPcMinBranches;
+  bool ctxLoadPcMultiVariantOnly;
   unsigned ctxShift;
   unsigned ctxBits;
   unsigned ctxWindowSize;
@@ -144,6 +148,12 @@ class CMCPrefetcher : public Queued
         statistics::Scalar ctxSingleVariantMismatches;
         statistics::Scalar ctxMultiVariantMismatches;
         statistics::Scalar ctxRequestSnapshots;
+        statistics::Scalar ctxLoadPcSnapshots;
+        statistics::Scalar ctxLoadPcFallbacks;
+        statistics::Scalar ctxLoadPcInsufficientBranches;
+        statistics::Scalar ctxLoadPcSingleVariantSkips;
+        statistics::Scalar ctxLoadPcNoBetterMatchSkips;
+        statistics::Scalar ctxLoadPcDisambiguations;
         statistics::Scalar ctxGlobalFallbacks;
     } statsCMC;
 
@@ -201,7 +211,29 @@ class CMCPrefetcher : public Queued
         return ctxEnable ? currentBranchCtx : 0;
     }
 
-    uint64_t getAccessBranchCtx(const PrefetchInfo &pfi) const;
+    struct SnapshotCtxResult
+    {
+        uint64_t ctx = 0;
+        unsigned selectedBranches = 0;
+        unsigned contributingBranches = 0;
+    };
+
+    struct AccessCtxSelection
+    {
+        uint64_t ctx = 0;
+        bool usedRequestSnapshot = false;
+        bool usedLoadPcSnapshot = false;
+        bool loadPcFallback = false;
+        bool loadPcInsufficient = false;
+        bool loadPcSingleVariantSkip = false;
+        bool loadPcNoBetterMatchSkip = false;
+    };
+
+    SnapshotCtxResult buildCtxFromSnapshot(
+        const BranchContextSnapshot &snapshot, uint64_t total_branches,
+        uint64_t total_taken_branches) const;
+    AccessCtxSelection selectAccessBranchCtx(
+        const PrefetchInfo &pfi, const StorageEntry *match_entry) const;
 
     uint64_t mixBranchCtx(uint64_t ctx, Addr branch_pc) const
     {
@@ -222,6 +254,14 @@ class CMCPrefetcher : public Queued
     {
         return std::count_if(entry->variants.begin(), entry->variants.end(),
             [](const ContextStream &variant) { return variant.valid; });
+    }
+
+    bool hasContextStream(const StorageEntry *entry, uint16_t ctx_tag) const
+    {
+        return std::any_of(entry->variants.begin(), entry->variants.end(),
+            [ctx_tag](const ContextStream &variant) {
+                return variant.valid && variant.ctxTag == ctx_tag;
+            });
     }
 
     ContextStream *findContextStream(StorageEntry *entry, uint16_t ctx_tag) const;

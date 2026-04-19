@@ -1087,7 +1087,8 @@ LSQ::LSQRequest::addReq(Addr addr, unsigned size,
                 _inst->pcState().instAddr(), _inst->contextId(),
                 std::move(_amo_op));
 
-        _port.getCPU()->attachBranchContextToRequest(_inst->threadNumber, req);
+        _port.getCPU()->attachBranchContextToRequest(
+            _inst->threadNumber, req, _inst->isLoad());
 
         req->setByteEnable(
                 std::vector<bool>(byte_enable.begin(),

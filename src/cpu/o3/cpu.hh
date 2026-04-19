@@ -44,10 +44,12 @@
 #ifndef __CPU_O3_CPU_HH__
 #define __CPU_O3_CPU_HH__
 
+#include <deque>
 #include <iostream>
 #include <list>
 #include <queue>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 #include "arch/generic/pcstate.hh"
@@ -578,17 +580,32 @@ class CPU : public BaseCPU
 
     struct ThreadBranchContextState
     {
+        struct LoggedBranch
+        {
+            Addr pc = 0;
+            bool taken = false;
+            uint64_t ordinal = 0;
+        };
+
+        struct LoadPcMarker
+        {
+            uint64_t totalBranches = 0;
+            uint64_t totalTakenBranches = 0;
+        };
+
         BranchContextSnapshot snapshot;
         uint64_t totalBranches = 0;
         uint64_t totalTakenBranches = 0;
+        std::deque<LoggedBranch> branchLog;
+        std::unordered_map<Addr, LoadPcMarker> lastLoadPcMarkers;
     };
 
     std::vector<ThreadBranchContextState> branchContextState;
 
   public:
     void noteExecutedBranch(ThreadID tid, Addr pc, bool taken);
-    void attachBranchContextToRequest(ThreadID tid,
-                                      const RequestPtr &req) const;
+    void attachBranchContextToRequest(ThreadID tid, const RequestPtr &req,
+                                      bool is_load);
 
     /** CPU pushRequest function, forwards request to LSQ. */
     Fault

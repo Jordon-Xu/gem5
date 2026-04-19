@@ -70,6 +70,14 @@ struct BaseCPUParams;
 namespace o3
 {
 
+namespace
+{
+
+constexpr size_t MaxTrackedBranchLogEntries =
+    BranchContextSnapshot::MaxEntries * 8;
+
+} // anonymous namespace
+
 CPU::CPU(const BaseO3CPUParams &params)
     : BaseCPU(params),
       mmu(params.mmu),
@@ -334,21 +342,57 @@ CPU::noteExecutedBranch(ThreadID tid, Addr pc, bool taken)
     auto &state = branchContextState[tid];
     state.snapshot.push(pc, taken);
     state.totalBranches++;
+    state.branchLog.push_back({pc, taken, state.totalBranches});
+    while (state.branchLog.size() > MaxTrackedBranchLogEntries) {
+        state.branchLog.pop_front();
+    }
     if (taken) {
         state.totalTakenBranches++;
     }
 }
 
 void
-CPU::attachBranchContextToRequest(ThreadID tid, const RequestPtr &req) const
+CPU::attachBranchContextToRequest(ThreadID tid, const RequestPtr &req,
+                                  bool is_load)
 {
     if (!req || tid >= branchContextState.size()) {
         return;
     }
 
-    const auto &state = branchContextState[tid];
+    auto &state = branchContextState[tid];
+    BranchContextSnapshot load_pc_snapshot;
+    uint64_t load_pc_total_branches = 0;
+    uint64_t load_pc_total_taken_branches = 0;
+    bool valid_load_pc_snapshot = false;
+
+    if (is_load && req->hasPC()) {
+        const Addr load_pc = req->getPC();
+        const auto marker_it = state.lastLoadPcMarkers.find(load_pc);
+        const uint64_t start_branches = marker_it != state.lastLoadPcMarkers.end()
+            ? marker_it->second.totalBranches : state.totalBranches;
+        const uint64_t start_taken =
+            marker_it != state.lastLoadPcMarkers.end() ?
+            marker_it->second.totalTakenBranches : state.totalTakenBranches;
+
+        load_pc_total_branches = state.totalBranches - start_branches;
+        load_pc_total_taken_branches =
+            state.totalTakenBranches - start_taken;
+        valid_load_pc_snapshot = true;
+
+        for (const auto &branch : state.branchLog) {
+            if (branch.ordinal > start_branches) {
+                load_pc_snapshot.push(branch.pc, branch.taken);
+            }
+        }
+
+        state.lastLoadPcMarkers[load_pc] = {
+            state.totalBranches, state.totalTakenBranches};
+    }
+
     auto ext = std::make_shared<BranchContextExtension>(
-        state.snapshot, state.totalBranches, state.totalTakenBranches);
+        state.snapshot, state.totalBranches, state.totalTakenBranches,
+        load_pc_snapshot, load_pc_total_branches,
+        load_pc_total_taken_branches, valid_load_pc_snapshot);
     req->setExtension(ext);
 }
 

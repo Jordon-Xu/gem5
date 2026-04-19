@@ -31,6 +31,9 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     ctxTakenOnly(p.ctx_taken_only),
     ctxUseExecuteBranches(p.ctx_use_execute_branches),
     ctxUseRequestSnapshot(p.ctx_use_request_snapshot),
+    ctxUseLoadPcSnapshot(p.ctx_use_load_pc_snapshot),
+    ctxLoadPcMinBranches(p.ctx_load_pc_min_branches),
+    ctxLoadPcMultiVariantOnly(p.ctx_load_pc_multivariant_only),
     ctxShift(p.ctx_shift),
     ctxBits(p.ctx_bits),
     ctxWindowSize(p.ctx_window_size),
@@ -66,6 +69,24 @@ CMCPrefetcher::CMCStats::CMCStats(statistics::Group *parent)
              "streams"),
     ADD_STAT(ctxRequestSnapshots, statistics::units::Count::get(),
              "number of accesses that used request-carried context"),
+    ADD_STAT(ctxLoadPcSnapshots, statistics::units::Count::get(),
+             "number of accesses that used same-load-PC branch windows"),
+    ADD_STAT(ctxLoadPcFallbacks, statistics::units::Count::get(),
+             "number of accesses whose same-load-PC windows fell back to the "
+             "global request snapshot"),
+    ADD_STAT(ctxLoadPcInsufficientBranches, statistics::units::Count::get(),
+             "number of accesses whose same-load-PC windows had too little "
+             "selected branch signal"),
+    ADD_STAT(ctxLoadPcSingleVariantSkips, statistics::units::Count::get(),
+             "number of accesses whose same-load-PC windows were skipped "
+             "because the primary key did not yet show multiple variants"),
+    ADD_STAT(ctxLoadPcNoBetterMatchSkips, statistics::units::Count::get(),
+             "number of accesses whose same-load-PC windows did not improve "
+             "variant selection over the global request snapshot"),
+    ADD_STAT(ctxLoadPcDisambiguations, statistics::units::Count::get(),
+             "number of accesses whose same-load-PC windows disambiguated a "
+             "multi-variant primary key better than the global request "
+             "snapshot"),
     ADD_STAT(ctxGlobalFallbacks, statistics::units::Count::get(),
              "number of accesses that fell back to global branch context")
 {
@@ -95,21 +116,15 @@ CMCPrefetcher::updateBranchCtx(Addr branch_pc)
     currentBranchCtx = new_ctx;
 }
 
-uint64_t
-CMCPrefetcher::getAccessBranchCtx(const PrefetchInfo &pfi) const
+CMCPrefetcher::SnapshotCtxResult
+CMCPrefetcher::buildCtxFromSnapshot(const BranchContextSnapshot &snapshot,
+                                    uint64_t total_branches,
+                                    uint64_t total_taken_branches) const
 {
-    if (!ctxEnable) {
-        return 0;
-    }
-
-    if (!ctxUseRequestSnapshot || !pfi.hasBranchContextSnapshot()) {
-        return getCurrentBranchCtx();
-    }
-
-    const auto &snapshot = pfi.getBranchContextSnapshot();
+    SnapshotCtxResult result;
     const uint64_t total_selected = ctxTakenOnly ?
-        pfi.getBranchContextTotalTakenBranches() :
-        pfi.getBranchContextTotalBranches();
+        total_taken_branches :
+        total_branches;
     const unsigned update_period = std::max(1u, ctxUpdatePeriod);
 
     std::vector<Addr> selected_branches;
@@ -122,9 +137,10 @@ CMCPrefetcher::getAccessBranchCtx(const PrefetchInfo &pfi) const
         }
         selected_branches.push_back(entry.pc);
     }
+    result.selectedBranches = selected_branches.size();
 
     if (selected_branches.empty()) {
-        return 0;
+        return result;
     }
 
     const uint64_t visible_selected = selected_branches.size();
@@ -139,18 +155,86 @@ CMCPrefetcher::getAccessBranchCtx(const PrefetchInfo &pfi) const
             contributing_branches.push_back(selected_branches[i]);
         }
     }
+    result.contributingBranches = contributing_branches.size();
 
-    uint64_t ctx = 0;
     size_t start = 0;
     if (ctxWindowSize != 0 && contributing_branches.size() > ctxWindowSize) {
         start = contributing_branches.size() - ctxWindowSize;
     }
 
     for (size_t i = start; i < contributing_branches.size(); ++i) {
-        ctx = mixBranchCtx(ctx, contributing_branches[i]);
+        result.ctx = mixBranchCtx(result.ctx, contributing_branches[i]);
     }
 
-    return ctx;
+    return result;
+}
+
+CMCPrefetcher::AccessCtxSelection
+CMCPrefetcher::selectAccessBranchCtx(const PrefetchInfo &pfi,
+                                     const StorageEntry *match_entry) const
+{
+    AccessCtxSelection selection;
+
+    if (!ctxEnable) {
+        return selection;
+    }
+
+    if (!ctxUseRequestSnapshot || !pfi.hasBranchContextSnapshot()) {
+        selection.ctx = getCurrentBranchCtx();
+        return selection;
+    }
+
+    selection.usedRequestSnapshot = true;
+    selection.ctx = buildCtxFromSnapshot(
+        pfi.getBranchContextSnapshot(),
+        pfi.getBranchContextTotalBranches(),
+        pfi.getBranchContextTotalTakenBranches()).ctx;
+
+    if (!ctxUseLoadPcSnapshot || !pfi.hasLoadPcBranchContextSnapshot()) {
+        return selection;
+    }
+
+    const auto load_pc_result = buildCtxFromSnapshot(
+            pfi.getLoadPcBranchContextSnapshot(),
+            pfi.getLoadPcBranchContextTotalBranches(),
+            pfi.getLoadPcBranchContextTotalTakenBranches());
+    if (!match_entry) {
+        selection.loadPcFallback = true;
+        selection.loadPcSingleVariantSkip = true;
+        return selection;
+    }
+
+    const bool multi_variant_match =
+        match_entry && validVariantCount(match_entry) > 1;
+    const bool variant_allowed =
+        !ctxLoadPcMultiVariantOnly || multi_variant_match;
+
+    if (load_pc_result.contributingBranches < ctxLoadPcMinBranches) {
+        selection.loadPcFallback = true;
+        selection.loadPcInsufficient = true;
+        return selection;
+    }
+
+    if (!variant_allowed) {
+        selection.loadPcFallback = true;
+        selection.loadPcSingleVariantSkip = true;
+        return selection;
+    }
+
+    const uint16_t global_ctx_tag = compressCtx(selection.ctx);
+    const uint16_t load_pc_ctx_tag = compressCtx(load_pc_result.ctx);
+    const bool global_exact = hasContextStream(match_entry, global_ctx_tag);
+    const bool load_pc_exact = hasContextStream(match_entry, load_pc_ctx_tag);
+
+    if (!(load_pc_exact && !global_exact)) {
+        selection.loadPcFallback = true;
+        selection.loadPcNoBetterMatchSkip = true;
+        return selection;
+    }
+
+    selection.ctx = load_pc_result.ctx;
+    selection.usedLoadPcSnapshot = true;
+    return selection;
 }
 
 void
@@ -377,11 +461,30 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     Addr addr = pfi.getAddr();
     Addr block_addr = blockIndex(addr); // takes off 6 Least Significant Bits for cache line
     bool is_secure = pfi.isSecure();
-    const bool using_request_snapshot =
-        ctxEnable && ctxUseRequestSnapshot && pfi.hasBranchContextSnapshot();
-    uint64_t ctx = getAccessBranchCtx(pfi);
-    if (using_request_snapshot) {
+    auto lookup_key = hash(block_addr, pc, 0);
+    StorageEntry *match_entry = storage.findEntry(lookup_key, is_secure);
+    const auto ctx_selection = selectAccessBranchCtx(pfi, match_entry);
+    uint64_t ctx = ctx_selection.ctx;
+    if (ctx_selection.usedRequestSnapshot) {
         statsCMC.ctxRequestSnapshots++;
+        if (ctx_selection.usedLoadPcSnapshot) {
+            statsCMC.ctxLoadPcSnapshots++;
+        }
+        if (ctx_selection.loadPcFallback) {
+            statsCMC.ctxLoadPcFallbacks++;
+        }
+        if (ctx_selection.loadPcInsufficient) {
+            statsCMC.ctxLoadPcInsufficientBranches++;
+        }
+        if (ctx_selection.loadPcSingleVariantSkip) {
+            statsCMC.ctxLoadPcSingleVariantSkips++;
+        }
+        if (ctx_selection.loadPcNoBetterMatchSkip) {
+            statsCMC.ctxLoadPcNoBetterMatchSkips++;
+        }
+        if (ctx_selection.usedLoadPcSnapshot) {
+            statsCMC.ctxLoadPcDisambiguations++;
+        }
     } else {
         statsCMC.ctxGlobalFallbacks++;
     }
@@ -389,17 +492,18 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 
     // DPRINTF(HWPrefetch, "CMC train: pc: %lx, addr: %lx, ctx: %lx\n", pc, block_addr, ctx);
 
-    auto lookup_key = hash(block_addr, pc, 0);
     const uint16_t cur_ctx_tag = compressCtx(ctx);
     DPRINTF(HWPrefetch,
         "CMC lookup pc=%lx addr=%lx ctx=%lx ctx_tag=%x key=%lx "
-        "request_snapshot=%d\n",
+        "request_snapshot=%d load_pc_snapshot=%d load_pc_fallback=%d "
+        "load_pc_single_variant_skip=%d load_pc_no_better_match_skip=%d\n",
         pc, block_addr, ctx, cur_ctx_tag, lookup_key,
-        using_request_snapshot);
+        ctx_selection.usedRequestSnapshot, ctx_selection.usedLoadPcSnapshot,
+        ctx_selection.loadPcFallback, ctx_selection.loadPcSingleVariantSkip,
+        ctx_selection.loadPcNoBetterMatchSkip);
 
 
     // Prefetch: check if there is a match
-    StorageEntry *match_entry = storage.findEntry(lookup_key, is_secure);
     // prefetchStats.metadataAccesses++;
     bool ctx_match = false;
     if (match_entry) {

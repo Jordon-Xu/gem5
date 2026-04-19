@@ -137,6 +137,11 @@ class Base : public ClockedObject
         bool validBranchContext;
         uint64_t branchContextTotalBranches;
         uint64_t branchContextTotalTakenBranches;
+        /** Optional load-scoped branch snapshot carried by the request */
+        BranchContextSnapshot loadPcBranchContext;
+        bool validLoadPcBranchContext;
+        uint64_t loadPcBranchContextTotalBranches;
+        uint64_t loadPcBranchContextTotalTakenBranches;
 
       public:
         /**
@@ -244,6 +249,30 @@ class Base : public ClockedObject
         {
             assert(hasBranchContextSnapshot());
             return branchContextTotalTakenBranches;
+        }
+
+        bool hasLoadPcBranchContextSnapshot() const
+        {
+            return validLoadPcBranchContext;
+        }
+
+        const BranchContextSnapshot &
+        getLoadPcBranchContextSnapshot() const
+        {
+            assert(hasLoadPcBranchContextSnapshot());
+            return loadPcBranchContext;
+        }
+
+        uint64_t getLoadPcBranchContextTotalBranches() const
+        {
+            assert(hasLoadPcBranchContextSnapshot());
+            return loadPcBranchContextTotalBranches;
+        }
+
+        uint64_t getLoadPcBranchContextTotalTakenBranches() const
+        {
+            assert(hasLoadPcBranchContextSnapshot());
+            return loadPcBranchContextTotalTakenBranches;
         }
 
         /**
