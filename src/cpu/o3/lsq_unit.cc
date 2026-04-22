@@ -238,6 +238,8 @@ LSQUnit::resetState()
     stalled = false;
 
     cacheBlockMask = ~(cpu->cacheLineSize() - 1);
+    previousLoadBranchStates.clear();
+    loadBranchStateLog.clear();
 }
 
 std::string
@@ -307,6 +309,73 @@ void
 LSQUnit::takeOverFrom()
 {
     resetState();
+}
+
+void
+LSQUnit::capturePreviousLoadBranchState(const DynInstPtr &inst, bool &valid,
+                                        bool &taken)
+{
+    assert(inst->isLoad());
+
+    const Addr load_pc = inst->pcState().instAddr();
+    const auto it = previousLoadBranchStates.find(load_pc);
+
+    valid = false;
+    taken = false;
+    if (it != previousLoadBranchStates.end()) {
+        valid = it->second.valid;
+        taken = it->second.taken;
+    }
+
+    bool current_valid = false;
+    bool current_taken = false;
+    current_valid = cpu->getLastOlderBranchOutcome(lsqID, inst->seqNum,
+                                                   current_taken);
+
+    loadBranchStateLog.push_back({
+        inst->seqNum,
+        load_pc,
+        it != previousLoadBranchStates.end(),
+        it != previousLoadBranchStates.end() ? it->second : LoadBranchState()
+    });
+    previousLoadBranchStates[load_pc] = {current_valid, current_taken};
+}
+
+void
+LSQUnit::rollbackLoadBranchStates(const InstSeqNum &squashed_num)
+{
+    std::vector<LoadBranchStateLogEntry> retained;
+    retained.reserve(loadBranchStateLog.size());
+
+    for (auto it = loadBranchStateLog.rbegin();
+         it != loadBranchStateLog.rend(); ++it) {
+        if (it->seqNum > squashed_num) {
+            if (it->hadPrior) {
+                previousLoadBranchStates[it->pc] = it->prior;
+            } else {
+                previousLoadBranchStates.erase(it->pc);
+            }
+        } else {
+            retained.push_back(*it);
+        }
+    }
+
+    loadBranchStateLog.assign(retained.rbegin(), retained.rend());
+}
+
+void
+LSQUnit::discardCommittedLoadBranchStateLog(const InstSeqNum &committed_num)
+{
+    std::vector<LoadBranchStateLogEntry> retained;
+    retained.reserve(loadBranchStateLog.size());
+
+    for (const auto &entry : loadBranchStateLog) {
+        if (entry.seqNum > committed_num) {
+            retained.push_back(entry);
+        }
+    }
+
+    loadBranchStateLog.swap(retained);
 }
 
 void
@@ -770,6 +839,8 @@ LSQUnit::commitLoads(InstSeqNum &youngest_inst)
             <= youngest_inst) {
         commitLoad();
     }
+
+    discardCommittedLoadBranchStateLog(youngest_inst);
 }
 
 void
@@ -946,6 +1017,9 @@ LSQUnit::squash(const InstSeqNum &squashed_num)
     DPRINTF(LSQUnit, "Squashing until [sn:%lli]!"
             "(Loads:%i Stores:%i)\n", squashed_num, loadQueue.size(),
             storeQueue.size());
+
+    cpu->squashBranchOutcomeHistory(lsqID, squashed_num);
+    rollbackLoadBranchStates(squashed_num);
 
     while (loadQueue.size() != 0 &&
             loadQueue.back().instruction()->seqNum > squashed_num) {

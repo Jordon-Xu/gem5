@@ -48,6 +48,7 @@
 
 #include <cstdint>
 
+#include "cpu/last_branch_outcome.hh"
 #include "arch/generic/tlb.hh"
 #include "base/compiler.hh"
 #include "base/statistics.hh"
@@ -131,6 +132,10 @@ class Base : public ClockedObject
         bool cacheMiss;
         /** Pointer to the associated request data */
         uint8_t *data;
+        /** Whether a previous same-load-PC branch state was attached. */
+        bool validPrevLoadBranchOutcome;
+        /** The previous same-load-PC branch taken/not-taken bit. */
+        bool prevLoadBranchTaken;
 
       public:
         /**
@@ -214,6 +219,19 @@ class Base : public ClockedObject
         bool isCacheMiss() const
         {
             return cacheMiss;
+        }
+
+        bool
+        hasPrevLoadBranchOutcome() const
+        {
+            return validPrevLoadBranchOutcome;
+        }
+
+        bool
+        getPrevLoadBranchTaken() const
+        {
+            assert(hasPrevLoadBranchOutcome());
+            return prevLoadBranchTaken;
         }
 
         /**

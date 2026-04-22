@@ -288,6 +288,8 @@ class LSQ
         uint32_t _numOutstandingPackets;
         AtomicOpFunctorPtr _amo_op;
         bool _hasStaleTranslation;
+        bool _prevLoadBranchOutcomeValid;
+        bool _prevLoadBranchTaken;
 
       protected:
         LSQUnit* lsqUnit() { return &_port; }

@@ -1578,6 +1578,8 @@ IEW::updateExeInstStats(const DynInstPtr& inst)
     //
     if (inst->isControl()) {
         cpu->executeStats[tid]->numBranches++;
+        const bool taken = inst->isUncondCtrl() || inst->pcState().branching();
+        cpu->recordBranchOutcome(tid, inst->seqNum, taken);
     }
 
     //

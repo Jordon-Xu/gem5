@@ -34,9 +34,14 @@ class CMCPrefetcher : public Queued
             Addr pc;
             Addr addr;
             bool is_secure;
-            RecordEntry(Addr p, Addr a, bool s)
-                : pc(p), addr(a), is_secure(s) {}
-            RecordEntry() : addr(0), is_secure(true) {}
+            bool has_prev_load_branch;
+            bool last_branch_taken;
+            RecordEntry(Addr p, Addr a, bool s, bool has_prev, bool taken)
+                : pc(p), addr(a), is_secure(s),
+                  has_prev_load_branch(has_prev), last_branch_taken(taken) {}
+            RecordEntry()
+                : addr(0), is_secure(true), has_prev_load_branch(false),
+                  last_branch_taken(false) {}
     };
     class Recorder
     {
@@ -90,6 +95,7 @@ class CMCPrefetcher : public Queued
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
     uint64_t acc_id = 1;
+    const bool useLastBranchTaken;
 
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
@@ -97,10 +103,15 @@ class CMCPrefetcher : public Queued
                            std::vector<AddrPriority> &addresses,
                            const CacheAccessor &cache_accessor) override;
   private:
-    uint64_t hash(Addr addr, Addr pc) {
-        return addr ^ (pc<<8);
+    uint64_t hash(Addr addr, Addr pc, bool has_prev_load_branch,
+                  bool last_branch_taken) const {
+        uint64_t branch_component = 0;
+        if (useLastBranchTaken && has_prev_load_branch) {
+            branch_component = last_branch_taken ? 2ULL : 1ULL;
+        }
+        return addr ^ (static_cast<uint64_t>(pc) << 8) ^
+            branch_component;
     }
-
 
     static const int STACK_SIZE = 4;
     std::deque<RecordEntry> trigger;

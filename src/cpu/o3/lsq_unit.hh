@@ -47,6 +47,8 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <unordered_map>
+#include <vector>
 
 #include "arch/generic/debugfaults.hh"
 #include "arch/generic/vec_reg.hh"
@@ -408,7 +410,27 @@ class LSQUnit
 
     BaseMMU *getMMUPtr();
 
+    void capturePreviousLoadBranchState(const DynInstPtr &inst, bool &valid,
+                                        bool &taken);
+
   private:
+    struct LoadBranchState
+    {
+        bool valid = false;
+        bool taken = false;
+    };
+
+    struct LoadBranchStateLogEntry
+    {
+        InstSeqNum seqNum = 0;
+        Addr pc = 0;
+        bool hadPrior = false;
+        LoadBranchState prior;
+    };
+
+    void rollbackLoadBranchStates(const InstSeqNum &squashed_num);
+    void discardCommittedLoadBranchStateLog(const InstSeqNum &committed_num);
+
     /** Pointer to the CPU. */
     CPU *cpu;
 
@@ -518,6 +540,11 @@ class LSQUnit
 
     /** Flag for memory model. */
     bool needsTSO;
+
+    /** Previous same-load-PC branch states for this thread. */
+    std::unordered_map<Addr, LoadBranchState> previousLoadBranchStates;
+    /** Dynamic update log to rollback wrong-path load-state updates. */
+    std::vector<LoadBranchStateLogEntry> loadBranchStateLog;
 
   protected:
     // Will also need how many read/write ports the Dcache has.  Or keep track

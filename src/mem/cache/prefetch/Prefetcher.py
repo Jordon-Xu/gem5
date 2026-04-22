@@ -795,6 +795,11 @@ class CMCPrefetcher(QueuedPrefetcher):
     )
     storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
     degree = Param.Int(16, "Number of prefetches to generate")
+    use_last_branch_taken = Param.Bool(
+        False,
+        "Include the previous execution's saved branch taken/not-taken "
+        "state for the same load PC in the CMC hash key",
+    )
     storage_indexing_policy = Param.BaseIndexingPolicy(
         SetAssociative(
             entry_size=1,

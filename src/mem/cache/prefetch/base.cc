@@ -61,8 +61,14 @@ Base::PrefetchInfo::PrefetchInfo(PacketPtr pkt, Addr addr, bool miss)
   : address(addr), pc(pkt->req->hasPC() ? pkt->req->getPC() : 0),
     requestorId(pkt->req->requestorId()), validPC(pkt->req->hasPC()),
     secure(pkt->isSecure()), size(pkt->req->getSize()), write(pkt->isWrite()),
-    paddress(pkt->req->getPaddr()), cacheMiss(miss)
+    paddress(pkt->req->getPaddr()), cacheMiss(miss),
+    validPrevLoadBranchOutcome(false), prevLoadBranchTaken(false)
 {
+    if (auto ext = pkt->req->getExtension<LastBranchOutcomeExtension>()) {
+        validPrevLoadBranchOutcome = ext->hasPreviousLoadOutcome();
+        prevLoadBranchTaken = ext->previousLoadWasTaken();
+    }
+
     unsigned int req_size = pkt->req->getSize();
     if ((!write && miss) || !pkt->hasData()) {
         data = nullptr;
@@ -77,7 +83,9 @@ Base::PrefetchInfo::PrefetchInfo(PrefetchInfo const &pfi, Addr addr)
   : address(addr), pc(pfi.pc), requestorId(pfi.requestorId),
     validPC(pfi.validPC), secure(pfi.secure), size(pfi.size),
     write(pfi.write), paddress(pfi.paddress), cacheMiss(pfi.cacheMiss),
-    data(nullptr)
+    data(nullptr),
+    validPrevLoadBranchOutcome(pfi.validPrevLoadBranchOutcome),
+    prevLoadBranchTaken(pfi.prevLoadBranchTaken)
 {
 }
 

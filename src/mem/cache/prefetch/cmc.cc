@@ -24,6 +24,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     recorder(new Recorder(p.degree)),
     storage(p.storage_assoc, p.storage_entries, p.storage_indexing_policy,
             p.storage_replacement_policy, StorageEntry()),
+    useLastBranchTaken(p.use_last_branch_taken),
     trigger()
 {
                     trigger.clear();
@@ -44,15 +45,19 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     Addr addr = pfi.getAddr();
     Addr block_addr = blockIndex(addr); // takes off 6 Least Significant Bits for cache line
     bool is_secure = pfi.isSecure();
+    const bool prev_load_branch_valid = pfi.hasPrevLoadBranchOutcome();
+    const bool prev_load_branch_taken =
+        prev_load_branch_valid ? pfi.getPrevLoadBranchTaken() : false;
 
 
-    DPRINTF(HWPrefetch, "CMC train: pc: %lx, addr: %lx\n", pc, block_addr);
-
-    
-    
+    DPRINTF(HWPrefetch,
+            "CMC train: pc: %lx, addr: %lx, prev_valid: %d, prev_taken: %d\n",
+            pc, block_addr, prev_load_branch_valid, prev_load_branch_taken);
 
     // Prefetch: check if there is a match
-    StorageEntry *match_entry = storage.findEntry(hash(block_addr, pc), is_secure);
+    StorageEntry *match_entry = storage.findEntry(
+        hash(block_addr, pc, prev_load_branch_valid, prev_load_branch_taken),
+        is_secure);
     // prefetchStats.metadataAccesses++;
     if (match_entry) {
         storage.accessEntry(match_entry);
@@ -85,7 +90,9 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
         //        trigger.size(), block_addr);
         assert(trigger.size()<STACK_SIZE);
 
-        trigger.push_back(RecordEntry(pc, block_addr, is_secure));
+        trigger.push_back(RecordEntry(
+            pc, block_addr, is_secure,
+            prev_load_branch_valid, prev_load_branch_taken));
     }
 
     /* 2. Train entry */
@@ -100,22 +107,28 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             //printf("trigger train finished, pc: %lx, addr: %lx\n",
                //     trigger_head.pc, trigger_head.addr);
 
-            StorageEntry *entry = storage.findEntry(hash(trigger_head.addr, trigger_head.pc), trigger_head.is_secure);
+            StorageEntry *entry = storage.findEntry(
+                hash(trigger_head.addr, trigger_head.pc,
+                     trigger_head.has_prev_load_branch,
+                     trigger_head.last_branch_taken),
+                trigger_head.is_secure);
             if (entry) {
                 // storage.accessEntry(entry); do not update replacement
                 DPRINTF(HWPrefetch, "CMC: enter the same trigger, pc: %lx, addr: %lx\n",
                                     trigger_head.pc, trigger_head.addr);
                 entry->addresses = recorder->entries;
 
-
             } else {
-                entry = storage.findVictim(hash(trigger_head.addr, trigger_head.pc));
+                entry = storage.findVictim(
+                    hash(trigger_head.addr, trigger_head.pc,
+                         trigger_head.has_prev_load_branch,
+                         trigger_head.last_branch_taken));
                 entry->addresses = recorder->entries;
 
-
-
                 storage.insertEntry(
-                    hash(trigger_head.addr, trigger_head.pc),
+                    hash(trigger_head.addr, trigger_head.pc,
+                         trigger_head.has_prev_load_branch,
+                         trigger_head.last_branch_taken),
                     trigger_head.is_secure,
                     entry
                 );
@@ -133,12 +146,15 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 				//meaning we never reach 100% coverage.
 				//This makes the trigger the last addr of the previous group, provided no other trigger already
 				// is prepared, because it was a recent reused addr.
-				trigger.push_back(RecordEntry(pc, block_addr, is_secure));
+				trigger.push_back(RecordEntry(
+                    pc, block_addr, is_secure,
+                    prev_load_branch_valid, prev_load_branch_taken));
 			}
             recorder->reset();
 
         }
     }
+
 }
 
 Addr cut_offset(Addr addr, int offset)

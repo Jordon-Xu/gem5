@@ -47,6 +47,7 @@
 
 #include "base/compiler.hh"
 #include "base/logging.hh"
+#include "cpu/last_branch_outcome.hh"
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/iew.hh"
@@ -1027,13 +1028,18 @@ LSQ::LSQRequest::LSQRequest(
     _state(State::NotIssued),
     _port(*port), _inst(inst), _data(nullptr),
     _res(nullptr), _addr(0), _size(0), _flags(0),
-    _numOutstandingPackets(0), _amo_op(nullptr)
+    _numOutstandingPackets(0), _amo_op(nullptr),
+    _prevLoadBranchOutcomeValid(false), _prevLoadBranchTaken(false)
 {
     flags.set(Flag::IsLoad, isLoad);
     flags.set(Flag::WriteBackToRegister,
               _inst->isStoreConditional() || _inst->isAtomic() ||
               _inst->isLoad());
     flags.set(Flag::IsAtomic, _inst->isAtomic());
+    if (isLoad) {
+        _port.capturePreviousLoadBranchState(
+            _inst, _prevLoadBranchOutcomeValid, _prevLoadBranchTaken);
+    }
     install();
 }
 
@@ -1050,13 +1056,19 @@ LSQ::LSQRequest::LSQRequest(
     _flags(flags_),
     _numOutstandingPackets(0),
     _amo_op(std::move(amo_op)),
-    _hasStaleTranslation(stale_translation)
+    _hasStaleTranslation(stale_translation),
+    _prevLoadBranchOutcomeValid(false),
+    _prevLoadBranchTaken(false)
 {
     flags.set(Flag::IsLoad, isLoad);
     flags.set(Flag::WriteBackToRegister,
               _inst->isStoreConditional() || _inst->isAtomic() ||
               _inst->isLoad());
     flags.set(Flag::IsAtomic, _inst->isAtomic());
+    if (isLoad) {
+        _port.capturePreviousLoadBranchState(
+            _inst, _prevLoadBranchOutcomeValid, _prevLoadBranchTaken);
+    }
     install();
 }
 
@@ -1086,6 +1098,12 @@ LSQ::LSQRequest::addReq(Addr addr, unsigned size,
                 addr, size-inactive_tail_size, _flags, _inst->requestorId(),
                 _inst->pcState().instAddr(), _inst->contextId(),
                 std::move(_amo_op));
+
+        if (isLoad()) {
+            req->setExtension(std::shared_ptr<LastBranchOutcomeExtension>(
+                new LastBranchOutcomeExtension(_prevLoadBranchOutcomeValid,
+                                               _prevLoadBranchTaken)));
+        }
 
         req->setByteEnable(
                 std::vector<bool>(byte_enable.begin(),

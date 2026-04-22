@@ -44,6 +44,7 @@
 #ifndef __CPU_O3_CPU_HH__
 #define __CPU_O3_CPU_HH__
 
+#include <deque>
 #include <iostream>
 #include <list>
 #include <queue>
@@ -118,6 +119,13 @@ class CPU : public BaseCPU
 
     /** Overall CPU status. */
     Status _status;
+    struct BranchOutcomeRecord
+    {
+        InstSeqNum seqNum = 0;
+        bool taken = false;
+    };
+    static constexpr size_t MaxRecentBranchOutcomes = 64;
+    std::vector<std::deque<BranchOutcomeRecord>> recentBranchOutcomes;
 
   private:
 
@@ -175,6 +183,43 @@ class CPU : public BaseCPU
   public:
     /** Constructs a CPU with the given parameters. */
     CPU(const BaseO3CPUParams &params);
+
+    void
+    recordBranchOutcome(ThreadID tid, InstSeqNum seq_num, bool taken)
+    {
+        auto &history = recentBranchOutcomes[tid];
+        history.push_back({seq_num, taken});
+        if (history.size() > MaxRecentBranchOutcomes) {
+            history.pop_front();
+        }
+    }
+
+    bool
+    getLastOlderBranchOutcome(ThreadID tid, InstSeqNum seq_num,
+                              bool &taken) const
+    {
+        const auto &history = recentBranchOutcomes[tid];
+        for (auto it = history.rbegin(); it != history.rend(); ++it) {
+            if (it->seqNum < seq_num) {
+                taken = it->taken;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void
+    squashBranchOutcomeHistory(ThreadID tid, InstSeqNum squashed_num)
+    {
+        auto &history = recentBranchOutcomes[tid];
+        std::deque<BranchOutcomeRecord> kept;
+        for (const auto &record : history) {
+            if (record.seqNum <= squashed_num) {
+                kept.push_back(record);
+            }
+        }
+        history.swap(kept);
+    }
 
     ProbePointArg<PacketPtr> *ppInstAccessComplete;
     ProbePointArg<std::pair<DynInstPtr, PacketPtr> > *ppDataAccessComplete;
