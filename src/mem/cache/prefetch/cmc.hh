@@ -2,11 +2,15 @@
 #define __MEM_CACHE_PREFETCH_CMC_HH__
 
 #include <algorithm>
+#include <array>
 #include <deque>
 #include <limits>
+#include <string>
+#include <unordered_map>
 
 //Adapted from https://github.com/OpenXiangShan/GEM5/blob/xs-dev/src/mem/cache/prefetch
 
+#include "base/output.hh"
 #include "base/types.hh"
 #include "mem/cache/prefetch/associative_set.hh"
 #include "mem/cache/prefetch/queued.hh"
@@ -108,6 +112,37 @@ class CMCPrefetcher : public Queued
         std::vector<ContextStream> variants;
     };
 
+    class DeltaPredictionEntry : public TaggedEntry
+    {
+      public:
+        static constexpr unsigned MaxCandidates = 4;
+
+        struct DeltaCandidate
+        {
+            bool valid = false;
+            int64_t deltaBlocks = 0;
+            uint8_t confidence = 0;
+            uint64_t lastTouch = 0;
+
+            void
+            invalidate()
+            {
+                valid = false;
+                deltaBlocks = 0;
+                confidence = 0;
+                lastTouch = 0;
+            }
+        };
+
+        using TaggedEntry::insert;
+
+        std::array<DeltaCandidate, MaxCandidates> candidates;
+
+        void insert(Addr tag, bool is_secure);
+        bool match(Addr tag, bool is_secure) const;
+        void invalidate() override;
+    };
+
 
 
 
@@ -115,8 +150,15 @@ class CMCPrefetcher : public Queued
   private:
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
+    AssociativeSet<DeltaPredictionEntry> deltaPredictor;
     const unsigned baseDegree;
     uint64_t ctxVariantClock = 0;
+    uint64_t deltaPredClock = 0;
+    OutputStream *analysisDump = nullptr;
+    const std::string analysisDumpFileName;
+    const uint64_t analysisDumpLimit;
+    uint64_t analysisSampleCount = 0;
+    std::unordered_map<Addr, Addr> lastBlockAddrByPc;
 
   /* branch context state */
   uint64_t currentBranchCtx = 0;
@@ -127,6 +169,8 @@ class CMCPrefetcher : public Queued
   bool ctxUseLoadPcSnapshot;
   const unsigned ctxLoadPcMinBranches;
   bool ctxLoadPcMultiVariantOnly;
+  bool deltaCtxPredEnable;
+  const unsigned deltaCtxPredTopK;
   unsigned ctxShift;
   unsigned ctxBits;
   unsigned ctxWindowSize;
@@ -155,10 +199,17 @@ class CMCPrefetcher : public Queued
         statistics::Scalar ctxLoadPcNoBetterMatchSkips;
         statistics::Scalar ctxLoadPcDisambiguations;
         statistics::Scalar ctxGlobalFallbacks;
+        statistics::Scalar deltaCtxPredLookups;
+        statistics::Scalar deltaCtxPredHits;
+        statistics::Scalar deltaCtxPredTrainUpdates;
+        statistics::Scalar deltaCtxPredTrainOverrides;
+        statistics::Scalar deltaCtxPredVariantHints;
+        statistics::Scalar deltaCtxPredHeadPromotions;
     } statsCMC;
 
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
+    ~CMCPrefetcher() override;
     void calculatePrefetch(const PrefetchInfo &pfi,
                            std::vector<AddrPriority> &addresses,
                            const CacheAccessor &cache_accessor) override;
@@ -229,11 +280,41 @@ class CMCPrefetcher : public Queued
         bool loadPcNoBetterMatchSkip = false;
     };
 
+    using ContextStream = StorageEntry::ContextStream;
+
+    struct DeltaPredictionState
+    {
+        Addr blockAddr = 0;
+        uint64_t ctx = 0;
+        bool isSecure = false;
+        bool valid = false;
+    };
+
     SnapshotCtxResult buildCtxFromSnapshot(
         const BranchContextSnapshot &snapshot, uint64_t total_branches,
         uint64_t total_taken_branches) const;
     AccessCtxSelection selectAccessBranchCtx(
         const PrefetchInfo &pfi, const StorageEntry *match_entry) const;
+    void maybeDumpAnalysisSample(const PrefetchInfo &pfi, Addr pc,
+                                 Addr block_addr, uint64_t selected_ctx,
+                                 const StorageEntry *match_entry,
+                                 const AccessCtxSelection &ctx_selection);
+    uint64_t deltaPredKey(Addr pc, uint64_t ctx) const;
+    DeltaPredictionEntry *findDeltaPrediction(Addr pc, uint64_t ctx,
+                                              bool is_secure);
+    DeltaPredictionEntry *findOrAllocateDeltaPrediction(
+        Addr pc, uint64_t ctx, bool is_secure);
+    std::vector<int64_t> collectPredictedDeltas(
+        const DeltaPredictionEntry &entry) const;
+    void trainDeltaPredictor(Addr pc, const DeltaPredictionState &prev_state,
+                             Addr current_block_addr);
+    ContextStream *selectStreamByPredictedDelta(StorageEntry *entry,
+        Addr current_block_addr,
+        const std::vector<int64_t> &predicted_deltas) const;
+    unsigned issueStreamWithPredictedDelta(
+        ContextStream &stream, Addr current_block_addr,
+        const std::vector<int64_t> &predicted_deltas, unsigned issue_deg,
+        std::vector<AddrPriority> &addresses);
 
     uint64_t mixBranchCtx(uint64_t ctx, Addr branch_pc) const
     {
@@ -248,7 +329,6 @@ class CMCPrefetcher : public Queued
     }
 
     void updateBranchCtx(Addr branch_pc);
-    using ContextStream = StorageEntry::ContextStream;
 
     unsigned validVariantCount(const StorageEntry *entry) const
     {
@@ -270,6 +350,8 @@ class CMCPrefetcher : public Queued
     ContextStream *selectTrainingStream(StorageEntry *entry, uint16_t ctx_tag,
                                         bool &allocated, bool &replaced);
     void touchContextStream(ContextStream &stream, bool reinforce);
+    void touchDeltaPrediction(
+        DeltaPredictionEntry::DeltaCandidate &candidate, bool reinforce);
 
     class PrefetchListenerPC : public ProbeListenerArgBase<Addr>
     {
@@ -334,6 +416,7 @@ class CMCPrefetcher : public Queued
         listenersExecutedTakenPC;
 
     std::deque<Addr> recentBranchPCs;
+    std::unordered_map<Addr, DeltaPredictionState> lastDeltaTrainByPc;
     static const int STACK_SIZE = 4;
     std::deque<RecordEntry> trigger;
     // RecordEntry trigger_stack[STACK_SIZE];

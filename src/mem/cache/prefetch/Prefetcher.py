@@ -898,6 +898,51 @@ class CMCPrefetcher(QueuedPrefetcher):
         4, "Number of prefetches to issue on a context mismatch"
     )
 
+    delta_ctx_pred_enable = Param.Bool(
+        False,
+        "Enable a small (load PC, raw context) -> next delta predictor "
+        "that only provides stream-selection / head-delta hints",
+    )
+
+    delta_ctx_pred_entries = Param.MemorySize(
+        "1024", "Number of entries in the context-to-delta predictor"
+    )
+
+    delta_ctx_pred_assoc = Param.Int(
+        4, "Associativity of the context-to-delta predictor"
+    )
+
+    delta_ctx_pred_topk = Param.Unsigned(
+        4,
+        "Number of ranked delta candidates retained and consulted per "
+        "context-to-delta predictor entry",
+    )
+
+    delta_ctx_pred_indexing_policy = Param.BaseIndexingPolicy(
+        SetAssociative(
+            entry_size=1,
+            assoc=Parent.delta_ctx_pred_assoc,
+            size=Parent.delta_ctx_pred_entries,
+        ),
+        "Indexing policy of the context-to-delta predictor",
+    )
+
+    delta_ctx_pred_replacement_policy = Param.BaseReplacementPolicy(
+        BRRIPRP(), "Replacement policy of the context-to-delta predictor"
+    )
+
+    analysis_dump_file = Param.String(
+        "",
+        "Optional CSV file to dump (load PC, address, delta, context) "
+        "samples for offline branch-context correlation analysis",
+    )
+
+    analysis_dump_limit = Param.Unsigned(
+        0,
+        "Maximum number of demand-access samples to dump for branch-context "
+        "analysis; 0 means unlimited",
+    )
+
     cxx_exports = [
         PyBindMethod("addEventProbeRetiredInsts"),
         PyBindMethod("addEventProbeRetiredBranches"),
