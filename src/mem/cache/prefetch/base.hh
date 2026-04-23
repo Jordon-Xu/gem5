@@ -134,6 +134,8 @@ class Base : public ClockedObject
         uint8_t *data;
         /** Whether a previous same-load-PC branch state was attached. */
         bool validPrevLoadBranchOutcome;
+        /** The previous same-load-PC branch PC. */
+        Addr prevLoadBranchPC;
         /** The previous same-load-PC branch taken/not-taken bit. */
         bool prevLoadBranchTaken;
 
@@ -225,6 +227,19 @@ class Base : public ClockedObject
         hasPrevLoadBranchOutcome() const
         {
             return validPrevLoadBranchOutcome;
+        }
+
+        bool
+        hasPrevLoadBranchPC() const
+        {
+            return validPrevLoadBranchOutcome;
+        }
+
+        Addr
+        getPrevLoadBranchPC() const
+        {
+            assert(hasPrevLoadBranchPC());
+            return prevLoadBranchPC;
         }
 
         bool

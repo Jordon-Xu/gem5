@@ -289,6 +289,7 @@ class LSQ
         AtomicOpFunctorPtr _amo_op;
         bool _hasStaleTranslation;
         bool _prevLoadBranchOutcomeValid;
+        Addr _prevLoadBranchPC;
         bool _prevLoadBranchTaken;
 
       protected:

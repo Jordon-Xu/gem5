@@ -122,6 +122,7 @@ class CPU : public BaseCPU
     struct BranchOutcomeRecord
     {
         InstSeqNum seqNum = 0;
+        Addr pc = 0;
         bool taken = false;
     };
     static constexpr size_t MaxRecentBranchOutcomes = 64;
@@ -185,10 +186,10 @@ class CPU : public BaseCPU
     CPU(const BaseO3CPUParams &params);
 
     void
-    recordBranchOutcome(ThreadID tid, InstSeqNum seq_num, bool taken)
+    recordBranchOutcome(ThreadID tid, InstSeqNum seq_num, Addr pc, bool taken)
     {
         auto &history = recentBranchOutcomes[tid];
-        history.push_back({seq_num, taken});
+        history.push_back({seq_num, pc, taken});
         if (history.size() > MaxRecentBranchOutcomes) {
             history.pop_front();
         }
@@ -196,11 +197,12 @@ class CPU : public BaseCPU
 
     bool
     getLastOlderBranchOutcome(ThreadID tid, InstSeqNum seq_num,
-                              bool &taken) const
+                              Addr &pc, bool &taken) const
     {
         const auto &history = recentBranchOutcomes[tid];
         for (auto it = history.rbegin(); it != history.rend(); ++it) {
             if (it->seqNum < seq_num) {
+                pc = it->pc;
                 taken = it->taken;
                 return true;
             }

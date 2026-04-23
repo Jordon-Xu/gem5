@@ -313,7 +313,7 @@ LSQUnit::takeOverFrom()
 
 void
 LSQUnit::capturePreviousLoadBranchState(const DynInstPtr &inst, bool &valid,
-                                        bool &taken)
+                                        Addr &branch_pc, bool &taken)
 {
     assert(inst->isLoad());
 
@@ -321,15 +321,19 @@ LSQUnit::capturePreviousLoadBranchState(const DynInstPtr &inst, bool &valid,
     const auto it = previousLoadBranchStates.find(load_pc);
 
     valid = false;
+    branch_pc = 0;
     taken = false;
     if (it != previousLoadBranchStates.end()) {
         valid = it->second.valid;
+        branch_pc = it->second.branchPC;
         taken = it->second.taken;
     }
 
     bool current_valid = false;
+    Addr current_branch_pc = 0;
     bool current_taken = false;
     current_valid = cpu->getLastOlderBranchOutcome(lsqID, inst->seqNum,
+                                                   current_branch_pc,
                                                    current_taken);
 
     loadBranchStateLog.push_back({
@@ -338,7 +342,9 @@ LSQUnit::capturePreviousLoadBranchState(const DynInstPtr &inst, bool &valid,
         it != previousLoadBranchStates.end(),
         it != previousLoadBranchStates.end() ? it->second : LoadBranchState()
     });
-    previousLoadBranchStates[load_pc] = {current_valid, current_taken};
+    previousLoadBranchStates[load_pc] = {
+        current_valid, current_branch_pc, current_taken
+    };
 }
 
 void

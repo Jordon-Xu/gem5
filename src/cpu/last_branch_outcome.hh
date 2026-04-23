@@ -11,15 +11,15 @@ class LastBranchOutcomeExtension
     : public Extension<Request, LastBranchOutcomeExtension>
 {
   public:
-    LastBranchOutcomeExtension(bool valid, bool taken)
-        : valid(valid), taken(taken)
+    LastBranchOutcomeExtension(bool valid, Addr pc, bool taken)
+        : valid(valid), pc(pc), taken(taken)
     {}
 
     std::unique_ptr<ExtensionBase>
     clone() const override
     {
         return std::unique_ptr<LastBranchOutcomeExtension>(
-            new LastBranchOutcomeExtension(valid, taken));
+            new LastBranchOutcomeExtension(valid, pc, taken));
     }
 
     bool
@@ -34,8 +34,15 @@ class LastBranchOutcomeExtension
         return taken;
     }
 
+    Addr
+    previousLoadBranchPC() const
+    {
+        return pc;
+    }
+
   private:
     bool valid;
+    Addr pc;
     bool taken;
 };
 

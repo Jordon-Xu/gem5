@@ -5,6 +5,11 @@
 
 //Adapted from https://github.com/OpenXiangShan/GEM5/blob/xs-dev/src/mem/cache/prefetch
 
+#include <fstream>
+#include <string>
+#include <vector>
+#include <unordered_map>
+
 #include "base/types.hh"
 #include "mem/cache/prefetch/associative_set.hh"
 #include "mem/cache/prefetch/queued.hh"
@@ -35,12 +40,16 @@ class CMCPrefetcher : public Queued
             Addr addr;
             bool is_secure;
             bool has_prev_load_branch;
+            Addr prev_branch_pc;
             bool last_branch_taken;
-            RecordEntry(Addr p, Addr a, bool s, bool has_prev, bool taken)
+            RecordEntry(Addr p, Addr a, bool s, bool has_prev,
+                        Addr branch_pc, bool taken)
                 : pc(p), addr(a), is_secure(s),
-                  has_prev_load_branch(has_prev), last_branch_taken(taken) {}
+                  has_prev_load_branch(has_prev), prev_branch_pc(branch_pc),
+                  last_branch_taken(taken) {}
             RecordEntry()
                 : addr(0), is_secure(true), has_prev_load_branch(false),
+                  prev_branch_pc(0),
                   last_branch_taken(false) {}
     };
     class Recorder
@@ -92,10 +101,82 @@ class CMCPrefetcher : public Queued
 
 
   private:
+    struct ChooserKey
+    {
+        Addr loadPc = 0;
+        Addr prevBranchPc = 0;
+
+        bool
+        operator==(const ChooserKey &other) const
+        {
+            return loadPc == other.loadPc &&
+                   prevBranchPc == other.prevBranchPc;
+        }
+    };
+
+    struct ChooserKeyHash
+    {
+        std::size_t
+        operator()(const ChooserKey &key) const
+        {
+            return std::hash<Addr>{}(key.loadPc) ^
+                (std::hash<Addr>{}(key.prevBranchPc) << 1);
+        }
+    };
+
+    struct HeadDeltaChooserEntry
+    {
+        int64_t deltaBlocks = 0;
+        unsigned confidence = 0;
+    };
+
+    struct Stats : public statistics::Group
+    {
+        Stats(statistics::Group *parent);
+
+        statistics::Scalar totalLookups;
+        statistics::Scalar lookupsWithValidPrevBranch;
+        statistics::Scalar prevBranchTakenLookups;
+        statistics::Scalar prevBranchNotTakenLookups;
+        statistics::Scalar lookupAugmentedKeyDiffersFromBaseline;
+        statistics::Scalar baselineLookupHits;
+        statistics::Scalar augmentedLookupHits;
+        statistics::Scalar prefetchCandidatesFromAugmentedKeys;
+
+        statistics::Scalar trainCompletions;
+        statistics::Scalar trainsWithValidPrevBranch;
+        statistics::Scalar prevBranchTakenTrains;
+        statistics::Scalar prevBranchNotTakenTrains;
+        statistics::Scalar trainAugmentedKeyDiffersFromBaseline;
+        statistics::Scalar baselineTrainHits;
+        statistics::Scalar augmentedTrainHits;
+        statistics::Scalar chooserLookups;
+        statistics::Scalar chooserHits;
+        statistics::Scalar chooserHeadPromotions;
+        statistics::Scalar chooserTrainUpdates;
+
+        statistics::Formula prevBranchFeatureValidRate;
+        statistics::Formula baselineLookupHitRate;
+        statistics::Formula augmentedLookupHitRate;
+        statistics::Formula prevBranchTakenRate;
+        statistics::Formula trainPrevBranchFeatureValidRate;
+        statistics::Formula baselineTrainHitRate;
+        statistics::Formula augmentedTrainHitRate;
+        statistics::Formula prevBranchTakenTrainRate;
+        statistics::Formula chooserHitRate;
+    } cmcStats;
+
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
     uint64_t acc_id = 1;
     const bool useLastBranchTaken;
+    const std::string prevBranchDumpFile;
+    const uint64_t prevBranchDumpLimit;
+    std::ofstream prevBranchDumpStream;
+    uint64_t prevBranchDumpedSamples = 0;
+    std::unordered_map<Addr, Addr> lastObservedBlockByPc;
+    std::unordered_map<ChooserKey, HeadDeltaChooserEntry, ChooserKeyHash>
+        headDeltaChooser;
 
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
@@ -103,18 +184,21 @@ class CMCPrefetcher : public Queued
                            std::vector<AddrPriority> &addresses,
                            const CacheAccessor &cache_accessor) override;
   private:
-    uint64_t hash(Addr addr, Addr pc, bool has_prev_load_branch,
-                  bool last_branch_taken) const {
-        uint64_t branch_component = 0;
-        if (useLastBranchTaken && has_prev_load_branch) {
-            branch_component = last_branch_taken ? 2ULL : 1ULL;
-        }
-        return addr ^ (static_cast<uint64_t>(pc) << 8) ^
-            branch_component;
+    uint64_t
+    hash(Addr addr, Addr pc) const
+    {
+        return addr ^ (static_cast<uint64_t>(pc) << 8);
     }
 
     static const int STACK_SIZE = 4;
     std::deque<RecordEntry> trigger;
+    void dumpPrevBranchSample(Addr pc, Addr block_addr, bool has_prev_pc,
+                              Addr delta_blocks, bool prev_branch_valid,
+                              Addr prev_branch_pc, bool prev_branch_taken,
+                              bool cache_miss, bool match_entry);
+    bool applyHeadDeltaHint(Addr block_addr, Addr pc,
+                            bool prev_branch_valid, Addr prev_branch_pc,
+                            std::vector<AddrPriority> &addresses);
     // RecordEntry trigger_stack[STACK_SIZE];
 };
 

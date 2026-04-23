@@ -411,12 +411,13 @@ class LSQUnit
     BaseMMU *getMMUPtr();
 
     void capturePreviousLoadBranchState(const DynInstPtr &inst, bool &valid,
-                                        bool &taken);
+                                        Addr &branch_pc, bool &taken);
 
   private:
     struct LoadBranchState
     {
         bool valid = false;
+        Addr branchPC = 0;
         bool taken = false;
     };
 

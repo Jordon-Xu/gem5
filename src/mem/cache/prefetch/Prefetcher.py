@@ -797,8 +797,16 @@ class CMCPrefetcher(QueuedPrefetcher):
     degree = Param.Int(16, "Number of prefetches to generate")
     use_last_branch_taken = Param.Bool(
         False,
-        "Include the previous execution's saved branch taken/not-taken "
-        "state for the same load PC in the CMC hash key",
+        "Use the previous execution's saved branch PC for the same load PC "
+        "as a small head-delta chooser hint on top of the baseline CMC key",
+    )
+    prev_branch_dump_file = Param.String(
+        "",
+        "Optional CSV path for dumping prev-branch/next-address samples",
+    )
+    prev_branch_dump_limit = Param.Unsigned(
+        0,
+        "Maximum number of prev-branch analysis samples to dump",
     )
     storage_indexing_policy = Param.BaseIndexingPolicy(
         SetAssociative(

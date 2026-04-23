@@ -1029,7 +1029,8 @@ LSQ::LSQRequest::LSQRequest(
     _port(*port), _inst(inst), _data(nullptr),
     _res(nullptr), _addr(0), _size(0), _flags(0),
     _numOutstandingPackets(0), _amo_op(nullptr),
-    _prevLoadBranchOutcomeValid(false), _prevLoadBranchTaken(false)
+    _prevLoadBranchOutcomeValid(false), _prevLoadBranchPC(0),
+    _prevLoadBranchTaken(false)
 {
     flags.set(Flag::IsLoad, isLoad);
     flags.set(Flag::WriteBackToRegister,
@@ -1038,7 +1039,8 @@ LSQ::LSQRequest::LSQRequest(
     flags.set(Flag::IsAtomic, _inst->isAtomic());
     if (isLoad) {
         _port.capturePreviousLoadBranchState(
-            _inst, _prevLoadBranchOutcomeValid, _prevLoadBranchTaken);
+            _inst, _prevLoadBranchOutcomeValid, _prevLoadBranchPC,
+            _prevLoadBranchTaken);
     }
     install();
 }
@@ -1058,6 +1060,7 @@ LSQ::LSQRequest::LSQRequest(
     _amo_op(std::move(amo_op)),
     _hasStaleTranslation(stale_translation),
     _prevLoadBranchOutcomeValid(false),
+    _prevLoadBranchPC(0),
     _prevLoadBranchTaken(false)
 {
     flags.set(Flag::IsLoad, isLoad);
@@ -1067,7 +1070,8 @@ LSQ::LSQRequest::LSQRequest(
     flags.set(Flag::IsAtomic, _inst->isAtomic());
     if (isLoad) {
         _port.capturePreviousLoadBranchState(
-            _inst, _prevLoadBranchOutcomeValid, _prevLoadBranchTaken);
+            _inst, _prevLoadBranchOutcomeValid, _prevLoadBranchPC,
+            _prevLoadBranchTaken);
     }
     install();
 }
@@ -1102,6 +1106,7 @@ LSQ::LSQRequest::addReq(Addr addr, unsigned size,
         if (isLoad()) {
             req->setExtension(std::shared_ptr<LastBranchOutcomeExtension>(
                 new LastBranchOutcomeExtension(_prevLoadBranchOutcomeValid,
+                                               _prevLoadBranchPC,
                                                _prevLoadBranchTaken)));
         }
 
