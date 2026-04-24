@@ -249,6 +249,9 @@ Base::probeNotify(const CacheAccessProbeArg &acc, bool miss)
     if (has_been_prefetched) {
         usefulPrefetches += 1;
         prefetchStats.pfUseful++;
+        DPRINTF(HWPrefetch,
+                "%s useful prefetch demand addr:%#x blk:%#x miss:%d\n",
+                name(), pkt->getAddr(), blockAddress(pkt->getAddr()), miss);
         if (miss)
             // This case happens when a demand hits on a prefetched line
             // that's not in the requested coherency state.

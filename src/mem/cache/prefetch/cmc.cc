@@ -2,6 +2,8 @@
 //Adapted from https://github.com/OpenXiangShan/GEM5/blob/xs-dev/src/mem/cache/prefetch
 #include "mem/cache/prefetch/cmc.hh"
 
+#include <unordered_set>
+
 #include "debug/HWPrefetch.hh"
 #include "mem/cache/prefetch/associative_set_impl.hh"
 #include "params/CMCPrefetcher.hh"
@@ -20,13 +22,35 @@ namespace prefetch
 
 CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
 : Queued(p),
-      cachetags(p.cachetags),
+    cachetags(p.cachetags),
+    statsCMC(this),
     recorder(new Recorder(p.degree)),
     storage(p.storage_assoc, p.storage_entries, p.storage_indexing_policy,
             p.storage_replacement_policy, StorageEntry()),
     trigger()
 {
-                    trigger.clear();
+    trigger.clear();
+}
+
+CMCPrefetcher::CMCStats::CMCStats(statistics::Group *parent)
+    : statistics::Group(parent, "cmc"),
+      ADD_STAT(storageHits, statistics::units::Count::get(),
+               "number of times a CMC trigger hits the storage table"),
+      ADD_STAT(storageWrites, statistics::units::Count::get(),
+               "number of CMC storage entries updated or inserted"),
+      ADD_STAT(trainedTargets, statistics::units::Count::get(),
+               "number of raw target addresses captured during training"),
+      ADD_STAT(trainedTargetsUnaligned, statistics::units::Count::get(),
+               "number of trained targets that were not cache-line aligned"),
+      ADD_STAT(trainedLineDuplicates, statistics::units::Count::get(),
+               "number of duplicate cache lines within trained target groups"),
+      ADD_STAT(emittedTargets, statistics::units::Count::get(),
+               "number of raw target addresses emitted on storage hits"),
+      ADD_STAT(emittedTargetsUnaligned, statistics::units::Count::get(),
+               "number of emitted targets that were not cache-line aligned"),
+      ADD_STAT(emittedLineDuplicates, statistics::units::Count::get(),
+               "number of duplicate cache lines within emitted target groups")
+{
 }
 
 
@@ -55,14 +79,26 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     StorageEntry *match_entry = storage.findEntry(hash(block_addr, pc), is_secure);
     // prefetchStats.metadataAccesses++;
     if (match_entry) {
+        statsCMC.storageHits++;
         storage.accessEntry(match_entry);
         // prefetch on cache miss or on prefetch hit
         DPRINTF(HWPrefetch, "Storage hit, trigger pc: %lx, addr: %lx\n",
                 pc, block_addr);
-      //printf("=== Storage hit, trigger addr: %lx\n", block_addr);
+        std::unordered_set<Addr> emitted_lines;
 
-        for (auto addr: match_entry->addresses) {
-            addresses.push_back(AddrPriority(addr, 0));
+        for (auto target_addr : match_entry->addresses) {
+            const Addr line_addr = blockAddress(target_addr);
+            statsCMC.emittedTargets++;
+            if (target_addr != line_addr) {
+                statsCMC.emittedTargetsUnaligned++;
+            }
+            if (!emitted_lines.insert(line_addr).second) {
+                statsCMC.emittedLineDuplicates++;
+            }
+            DPRINTF(HWPrefetch,
+                    "CMC emit candidate raw:%#lx line:%#lx pc:%#lx trigger:%#lx\n",
+                    target_addr, line_addr, pc, block_addr);
+            addresses.push_back(AddrPriority(target_addr, 0));
         }
     }
 
@@ -99,6 +135,22 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 			//finished gets set once a coalesced set of 16 targets get stored in the training entry.
             //printf("trigger train finished, pc: %lx, addr: %lx\n",
                //     trigger_head.pc, trigger_head.addr);
+            std::unordered_set<Addr> trained_lines;
+            for (auto target_addr : recorder->entries) {
+                const Addr line_addr = blockAddress(target_addr);
+                statsCMC.trainedTargets++;
+                if (target_addr != line_addr) {
+                    statsCMC.trainedTargetsUnaligned++;
+                }
+                if (!trained_lines.insert(line_addr).second) {
+                    statsCMC.trainedLineDuplicates++;
+                }
+                DPRINTF(HWPrefetch,
+                        "CMC train target raw:%#lx line:%#lx trigger_pc:%#lx "
+                        "trigger_line:%#lx\n",
+                        target_addr, line_addr, trigger_head.pc,
+                        blockAddress(trigger_head.addr));
+            }
 
             StorageEntry *entry = storage.findEntry(hash(trigger_head.addr, trigger_head.pc), trigger_head.is_secure);
             if (entry) {
@@ -106,20 +158,16 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
                 DPRINTF(HWPrefetch, "CMC: enter the same trigger, pc: %lx, addr: %lx\n",
                                     trigger_head.pc, trigger_head.addr);
                 entry->addresses = recorder->entries;
-
-
             } else {
                 entry = storage.findVictim(hash(trigger_head.addr, trigger_head.pc));
                 entry->addresses = recorder->entries;
-
-
-
                 storage.insertEntry(
                     hash(trigger_head.addr, trigger_head.pc),
                     trigger_head.is_secure,
                     entry
                 );
             }
+            statsCMC.storageWrites++;
 
             for (auto addr: recorder->entries) {
                 DPRINTF(HWPrefetch, "entry addr: 0x%lx\n",

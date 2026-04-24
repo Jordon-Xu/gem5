@@ -87,6 +87,20 @@ class CMCPrefetcher : public Queued
 
 
   private:
+    struct CMCStats : public statistics::Group
+    {
+        CMCStats(statistics::Group *parent);
+
+        statistics::Scalar storageHits;
+        statistics::Scalar storageWrites;
+        statistics::Scalar trainedTargets;
+        statistics::Scalar trainedTargetsUnaligned;
+        statistics::Scalar trainedLineDuplicates;
+        statistics::Scalar emittedTargets;
+        statistics::Scalar emittedTargetsUnaligned;
+        statistics::Scalar emittedLineDuplicates;
+    } statsCMC;
+
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
     uint64_t acc_id = 1;
