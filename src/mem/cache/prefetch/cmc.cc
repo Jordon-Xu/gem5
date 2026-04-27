@@ -2,6 +2,8 @@
 //Adapted from https://github.com/OpenXiangShan/GEM5/blob/xs-dev/src/mem/cache/prefetch
 #include "mem/cache/prefetch/cmc.hh"
 
+#include <algorithm>
+
 #include "base/logging.hh"
 #include "debug/HWPrefetch.hh"
 #include "mem/cache/prefetch/associative_set_impl.hh"
@@ -25,6 +27,16 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(lookupAugmentedKeyDiffersFromBaseline,
         statistics::units::Count::get(),
         "Lookups where the augmented key differs from the baseline key"),
+    ADD_STAT(prevBranchDistinctPCs, statistics::units::Count::get(),
+        "Distinct previous conditional branch PCs observed by CMC"),
+    ADD_STAT(prevBranchBiasedPCs, statistics::units::Count::get(),
+        "Previous conditional branch PCs classified as outcome-biased"),
+    ADD_STAT(prevBranchBiasedLookups, statistics::units::Count::get(),
+        "Lookups whose previous conditional branch PC is outcome-biased"),
+    ADD_STAT(prevBranchFilteredLookups, statistics::units::Count::get(),
+        "Lookups where the previous branch feature is filtered out"),
+    ADD_STAT(prevBranchChooserUsableLookups, statistics::units::Count::get(),
+        "Lookups with a previous branch feature usable by the chooser"),
     ADD_STAT(baselineLookupHits, statistics::units::Count::get(),
         "Lookup hits using the baseline (block_addr, load_pc) key"),
     ADD_STAT(augmentedLookupHits, statistics::units::Count::get(),
@@ -57,8 +69,21 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "Lookups that query the prev-branch head-delta chooser"),
     ADD_STAT(chooserHits, statistics::units::Count::get(),
         "Lookups that find a prev-branch head-delta chooser entry"),
+    ADD_STAT(chooserEligible, statistics::units::Count::get(),
+        "Chooser hits that pass the sample and confidence thresholds"),
+    ADD_STAT(chooserLowPuritySkips, statistics::units::Count::get(),
+        "Chooser hits skipped because the top head-delta share is too low"),
     ADD_STAT(chooserHeadPromotions, statistics::units::Count::get(),
         "Lookups where the chooser promotes a matching head delta"),
+    ADD_STAT(chooserSecondChoicePromotions, statistics::units::Count::get(),
+        "Lookups where the chooser promotes its second head-delta candidate"),
+    ADD_STAT(chooserConstructedHeads, statistics::units::Count::get(),
+        "Chooser hits where the predicted head address was constructed "
+        "instead of found in the baseline stream"),
+    ADD_STAT(chooserLimitedIssues, statistics::units::Count::get(),
+        "Chooser hits that limited the issued prefetch candidate list"),
+    ADD_STAT(chooserDroppedCandidates, statistics::units::Count::get(),
+        "Prefetch candidates dropped because the chooser limited a stream"),
     ADD_STAT(chooserTrainUpdates, statistics::units::Count::get(),
         "Training completions that update the prev-branch head-delta chooser"),
     ADD_STAT(prevBranchFeatureValidRate, statistics::units::Ratio::get(),
@@ -70,6 +95,12 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "Augmented-key lookup hit rate"),
     ADD_STAT(prevBranchTakenRate, statistics::units::Ratio::get(),
         "Taken fraction among valid previous-branch lookups"),
+    ADD_STAT(prevBranchBiasedLookupRate, statistics::units::Ratio::get(),
+        "Fraction of valid previous-branch lookups from biased branch PCs"),
+    ADD_STAT(prevBranchFilteredRate, statistics::units::Ratio::get(),
+        "Fraction of valid previous-branch lookups filtered before chooser"),
+    ADD_STAT(prevBranchChooserUsableRate, statistics::units::Ratio::get(),
+        "Fraction of valid previous-branch lookups usable by chooser"),
     ADD_STAT(trainPrevBranchFeatureValidRate, statistics::units::Ratio::get(),
         "Fraction of completed trainings with a valid previous same-load-PC "
         "branch feature"),
@@ -80,7 +111,9 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(prevBranchTakenTrainRate, statistics::units::Ratio::get(),
         "Taken fraction among valid previous-branch training completions"),
     ADD_STAT(chooserHitRate, statistics::units::Ratio::get(),
-        "Head-delta chooser hit rate among chooser lookups")
+        "Head-delta chooser hit rate among chooser lookups"),
+    ADD_STAT(chooserEligibleRate, statistics::units::Ratio::get(),
+        "Fraction of chooser hits that are eligible to issue hints")
 {
     using namespace statistics;
 
@@ -95,6 +128,18 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
 
     prevBranchTakenRate.flags(total);
     prevBranchTakenRate = prevBranchTakenLookups / lookupsWithValidPrevBranch;
+
+    prevBranchBiasedLookupRate.flags(total);
+    prevBranchBiasedLookupRate =
+        prevBranchBiasedLookups / lookupsWithValidPrevBranch;
+
+    prevBranchFilteredRate.flags(total);
+    prevBranchFilteredRate =
+        prevBranchFilteredLookups / lookupsWithValidPrevBranch;
+
+    prevBranchChooserUsableRate.flags(total);
+    prevBranchChooserUsableRate =
+        prevBranchChooserUsableLookups / lookupsWithValidPrevBranch;
 
     trainPrevBranchFeatureValidRate.flags(total);
     trainPrevBranchFeatureValidRate =
@@ -112,6 +157,9 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
 
     chooserHitRate.flags(total);
     chooserHitRate = chooserHits / chooserLookups;
+
+    chooserEligibleRate.flags(total);
+    chooserEligibleRate = chooserEligible / chooserHits;
 }
 
 //int64_t CMCPrefetcher::global_timestamp=0;
@@ -130,6 +178,19 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     storage(p.storage_assoc, p.storage_entries, p.storage_indexing_policy,
             p.storage_replacement_policy, StorageEntry()),
     useLastBranchTaken(p.use_last_branch_taken),
+    chooserTopK(std::min<unsigned>(
+        p.prev_branch_chooser_topk, HeadDeltaChooserEntry::MaxCandidates)),
+    chooserUseTaken(p.prev_branch_chooser_use_taken),
+    chooserMinSamples(p.prev_branch_chooser_min_samples),
+    chooserMinConfidence(p.prev_branch_chooser_min_confidence),
+    chooserMinTopPct(p.prev_branch_chooser_min_top_pct),
+    chooserLimitOnHit(p.prev_branch_chooser_limit_on_hit),
+    chooserOnlyPredicted(p.prev_branch_chooser_only_predicted),
+    chooserBaselineFallbackDegree(p.prev_branch_chooser_baseline_fallback_degree),
+    chooserConstructPredicted(p.prev_branch_chooser_construct_predicted),
+    filterBiasedPrevBranches(p.prev_branch_filter_biased),
+    branchBiasMinSamples(p.prev_branch_bias_min_samples),
+    branchBiasMaxPct(std::min<unsigned>(p.prev_branch_bias_max_pct, 100)),
     prevBranchDumpFile(p.prev_branch_dump_file),
     prevBranchDumpLimit(p.prev_branch_dump_limit),
     trigger()
@@ -145,8 +206,60 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
         prevBranchDumpStream
             << "sample_idx,pc,block_addr,has_prev_pc,delta_blocks,"
             << "prev_branch_valid,prev_branch_pc,prev_branch_taken,"
-            << "cache_miss,match_entry\n";
+            << "prev_branch_biased,prev_branch_usable,cache_miss,"
+            << "match_entry\n";
     }
+}
+
+CMCPrefetcher::ChooserKey
+CMCPrefetcher::makeChooserKey(Addr load_pc, Addr prev_branch_pc,
+                              bool prev_branch_taken) const
+{
+    return ChooserKey{
+        load_pc,
+        prev_branch_pc,
+        chooserUseTaken ? prev_branch_taken : false
+    };
+}
+
+bool
+CMCPrefetcher::isPrevBranchPcBiased(const PrevBranchPcStats &stats) const
+{
+    const uint64_t total = stats.taken + stats.notTaken;
+    if (total < branchBiasMinSamples || total == 0) {
+        return false;
+    }
+
+    const uint64_t dominant = std::max(stats.taken, stats.notTaken);
+    return dominant * 100 >= total * branchBiasMaxPct;
+}
+
+bool
+CMCPrefetcher::updatePrevBranchPcStats(Addr prev_branch_pc, bool taken)
+{
+    auto inserted = prevBranchPcStats.emplace(
+        prev_branch_pc, PrevBranchPcStats());
+    auto &stats = inserted.first->second;
+    if (inserted.second) {
+        cmcStats.prevBranchDistinctPCs++;
+    }
+
+    if (taken) {
+        stats.taken++;
+    } else {
+        stats.notTaken++;
+    }
+
+    const bool biased = isPrevBranchPcBiased(stats);
+    if (biased) {
+        cmcStats.prevBranchBiasedLookups++;
+        if (!stats.countedBiased) {
+            stats.countedBiased = true;
+            cmcStats.prevBranchBiasedPCs++;
+        }
+    }
+
+    return biased;
 }
 
 void
@@ -155,6 +268,8 @@ CMCPrefetcher::dumpPrevBranchSample(Addr pc, Addr block_addr, bool has_prev_pc,
                                     bool prev_branch_valid,
                                     Addr prev_branch_pc,
                                     bool prev_branch_taken,
+                                    bool prev_branch_biased,
+                                    bool prev_branch_usable,
                                     bool cache_miss, bool match_entry)
 {
     if (!prevBranchDumpStream || prevBranchDumpedSamples >= prevBranchDumpLimit) {
@@ -170,6 +285,8 @@ CMCPrefetcher::dumpPrevBranchSample(Addr pc, Addr block_addr, bool has_prev_pc,
         << (prev_branch_valid ? 1 : 0) << ','
         << prev_branch_pc << ','
         << (prev_branch_taken ? 1 : 0) << ','
+        << (prev_branch_biased ? 1 : 0) << ','
+        << (prev_branch_usable ? 1 : 0) << ','
         << (cache_miss ? 1 : 0) << ','
         << (match_entry ? 1 : 0) << '\n';
     prevBranchDumpedSamples++;
@@ -179,6 +296,7 @@ bool
 CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
                                   bool prev_branch_valid,
                                   Addr prev_branch_pc,
+                                  bool prev_branch_taken,
                                   std::vector<AddrPriority> &addresses)
 {
     if (!useLastBranchTaken || !prev_branch_valid || addresses.empty()) {
@@ -186,28 +304,149 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
     }
 
     cmcStats.chooserLookups++;
-    const ChooserKey chooser_key{pc, prev_branch_pc};
+    const ChooserKey chooser_key =
+        makeChooserKey(pc, prev_branch_pc, prev_branch_taken);
     const auto chooser_it = headDeltaChooser.find(chooser_key);
     if (chooser_it == headDeltaChooser.end()) {
         return false;
     }
 
     cmcStats.chooserHits++;
-    const int64_t predicted_delta = chooser_it->second.deltaBlocks;
-    for (std::size_t idx = 0; idx < addresses.size(); ++idx) {
-        const int64_t candidate_delta =
-            static_cast<int64_t>(blockIndex(addresses[idx].first)) -
-            static_cast<int64_t>(block_addr);
-        if (candidate_delta == predicted_delta) {
-            if (idx != 0) {
-                std::swap(addresses[0], addresses[idx]);
-            }
-            cmcStats.chooserHeadPromotions++;
-            return true;
+    const auto &entry = chooser_it->second;
+    if (entry.samples < chooserMinSamples ||
+        !entry.valid[0] || entry.counts[0] < chooserMinConfidence) {
+        return false;
+    }
+    if (entry.samples > 0 &&
+        static_cast<uint64_t>(entry.counts[0]) * 100 <
+            static_cast<uint64_t>(entry.samples) * chooserMinTopPct) {
+        cmcStats.chooserLowPuritySkips++;
+        return false;
+    }
+
+    cmcStats.chooserEligible++;
+    const unsigned limit = std::max(1U, chooserTopK);
+    for (unsigned candidate = 0;
+         candidate < limit && candidate < HeadDeltaChooserEntry::MaxCandidates;
+         ++candidate) {
+        if (!entry.valid[candidate]) {
+            continue;
         }
+
+        const int64_t predicted_delta = entry.deltaBlocks[candidate];
+        AddrPriority predicted_addr(0, 0);
+        bool predicted_found = false;
+        bool predicted_constructed = false;
+        std::size_t predicted_idx = 0;
+        for (std::size_t idx = 0; idx < addresses.size(); ++idx) {
+            const int64_t candidate_delta =
+                static_cast<int64_t>(blockIndex(addresses[idx].first)) -
+                static_cast<int64_t>(block_addr);
+            if (candidate_delta == predicted_delta) {
+                predicted_addr = addresses[idx];
+                predicted_found = true;
+                predicted_idx = idx;
+                break;
+            }
+        }
+
+        if (!predicted_found && chooserLimitOnHit &&
+            chooserConstructPredicted) {
+            const int64_t predicted_block =
+                static_cast<int64_t>(block_addr) + predicted_delta;
+            if (predicted_block >= 0) {
+                predicted_addr = AddrPriority(
+                    static_cast<Addr>(predicted_block) << lBlkSize, 0);
+                predicted_constructed = true;
+            }
+        }
+
+        if (!predicted_found && !predicted_constructed) {
+            continue;
+        }
+
+        if (chooserLimitOnHit) {
+            std::vector<AddrPriority> limited;
+            limited.reserve(1 + chooserBaselineFallbackDegree);
+            limited.push_back(predicted_addr);
+
+            if (!chooserOnlyPredicted) {
+                unsigned fallback_count = 0;
+                const Addr predicted_block =
+                    blockIndex(predicted_addr.first);
+                for (const auto &candidate_addr : addresses) {
+                    if (fallback_count >= chooserBaselineFallbackDegree) {
+                        break;
+                    }
+                    if (blockIndex(candidate_addr.first) == predicted_block) {
+                        continue;
+                    }
+                    limited.push_back(candidate_addr);
+                    fallback_count++;
+                }
+            }
+
+            if (addresses.size() > limited.size()) {
+                cmcStats.chooserDroppedCandidates +=
+                    addresses.size() - limited.size();
+            }
+            addresses.swap(limited);
+            cmcStats.chooserLimitedIssues++;
+            if (predicted_constructed) {
+                cmcStats.chooserConstructedHeads++;
+            }
+        } else if (predicted_found && predicted_idx != 0) {
+            std::swap(addresses[0], addresses[predicted_idx]);
+        }
+
+        cmcStats.chooserHeadPromotions++;
+        if (candidate == 1) {
+            cmcStats.chooserSecondChoicePromotions++;
+        }
+        return true;
     }
 
     return false;
+}
+
+void
+CMCPrefetcher::updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
+                                      bool prev_branch_taken,
+                                      int64_t head_delta_blocks)
+{
+    auto &entry = headDeltaChooser[
+        makeChooserKey(pc, prev_branch_pc, prev_branch_taken)];
+    entry.samples++;
+
+    for (unsigned i = 0; i < HeadDeltaChooserEntry::MaxCandidates; ++i) {
+        if (entry.valid[i] && entry.deltaBlocks[i] == head_delta_blocks) {
+            entry.counts[i]++;
+            if (i == 1 && entry.counts[1] > entry.counts[0]) {
+                std::swap(entry.deltaBlocks[0], entry.deltaBlocks[1]);
+                std::swap(entry.counts[0], entry.counts[1]);
+                std::swap(entry.valid[0], entry.valid[1]);
+            }
+            return;
+        }
+    }
+
+    for (unsigned i = 0; i < HeadDeltaChooserEntry::MaxCandidates; ++i) {
+        if (!entry.valid[i]) {
+            entry.valid[i] = true;
+            entry.deltaBlocks[i] = head_delta_blocks;
+            entry.counts[i] = 1;
+            return;
+        }
+    }
+
+    if (entry.counts[1] > 0) {
+        entry.counts[1]--;
+    }
+    if (entry.counts[1] == 0) {
+        entry.deltaBlocks[1] = head_delta_blocks;
+        entry.counts[1] = 1;
+        entry.valid[1] = true;
+    }
 }
 
 
@@ -230,6 +469,8 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
         prev_load_branch_valid ? pfi.getPrevLoadBranchPC() : 0;
     const bool prev_load_branch_taken =
         prev_load_branch_valid ? pfi.getPrevLoadBranchTaken() : false;
+    bool prev_load_branch_biased = false;
+    bool prev_load_branch_usable = false;
     const uint64_t baseline_key = hash(block_addr, pc);
     bool has_prev_pc = false;
     Addr delta_blocks = 0;
@@ -249,6 +490,15 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             cmcStats.prevBranchNotTakenLookups++;
         }
         cmcStats.lookupAugmentedKeyDiffersFromBaseline++;
+        prev_load_branch_biased = updatePrevBranchPcStats(
+            prev_load_branch_pc, prev_load_branch_taken);
+        prev_load_branch_usable =
+            !(filterBiasedPrevBranches && prev_load_branch_biased);
+        if (prev_load_branch_usable) {
+            cmcStats.prevBranchChooserUsableLookups++;
+        } else {
+            cmcStats.prevBranchFilteredLookups++;
+        }
     }
 
     StorageEntry *baseline_entry = storage.findEntry(baseline_key, is_secure);
@@ -266,7 +516,8 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     StorageEntry *match_entry = baseline_entry;
     dumpPrevBranchSample(pc, block_addr, has_prev_pc, delta_blocks,
                          prev_load_branch_valid, prev_load_branch_pc,
-                         prev_load_branch_taken, pfi.isCacheMiss(),
+                         prev_load_branch_taken, prev_load_branch_biased,
+                         prev_load_branch_usable, pfi.isCacheMiss(),
                          match_entry != nullptr);
     // prefetchStats.metadataAccesses++;
     if (match_entry) {
@@ -284,8 +535,9 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             cmcStats.prefetchCandidatesFromAugmentedKeys +=
                 match_entry->addresses.size();
         }
-        applyHeadDeltaHint(block_addr, pc, prev_load_branch_valid,
-                           prev_load_branch_pc, addresses);
+        applyHeadDeltaHint(block_addr, pc, prev_load_branch_usable,
+                           prev_load_branch_pc, prev_load_branch_taken,
+                           addresses);
     }
 
     // Train: update temporal access chain
@@ -309,7 +561,8 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 
         trigger.push_back(RecordEntry(
             pc, block_addr, is_secure,
-            prev_load_branch_valid, prev_load_branch_pc,
+            prev_load_branch_valid, prev_load_branch_usable,
+            prev_load_branch_pc,
             prev_load_branch_taken));
     }
 
@@ -367,27 +620,16 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
                 DPRINTF(HWPrefetch, "entry addr: 0x%lx\n",
                         addr);
             }
-            if (useLastBranchTaken && trigger_head.has_prev_load_branch &&
+            if (useLastBranchTaken &&
+                trigger_head.use_prev_branch_for_chooser &&
                 !recorder->entries.empty()) {
                 const int64_t head_delta_blocks =
                     static_cast<int64_t>(blockIndex(recorder->entries.front())) -
                     static_cast<int64_t>(trigger_head.addr);
-                const ChooserKey chooser_key{
-                    trigger_head.pc, trigger_head.prev_branch_pc};
-                auto &chooser_entry = headDeltaChooser[chooser_key];
-                if (chooser_entry.confidence == 0 ||
-                    chooser_entry.deltaBlocks == head_delta_blocks) {
-                    chooser_entry.deltaBlocks = head_delta_blocks;
-                    if (chooser_entry.confidence < 3) {
-                        chooser_entry.confidence++;
-                    }
-                } else {
-                    chooser_entry.confidence--;
-                    if (chooser_entry.confidence == 0) {
-                        chooser_entry.deltaBlocks = head_delta_blocks;
-                        chooser_entry.confidence = 1;
-                    }
-                }
+                updateHeadDeltaChooser(
+                    trigger_head.pc, trigger_head.prev_branch_pc,
+                    trigger_head.last_branch_taken,
+                    head_delta_blocks);
                 cmcStats.chooserTrainUpdates++;
             }
             // prefetchStats.metadataAccesses++;
@@ -400,7 +642,8 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 				// is prepared, because it was a recent reused addr.
 					trigger.push_back(RecordEntry(
 	                    pc, block_addr, is_secure,
-	                    prev_load_branch_valid, prev_load_branch_pc,
+	                    prev_load_branch_valid, prev_load_branch_usable,
+	                    prev_load_branch_pc,
 	                    prev_load_branch_taken));
 				}
             recorder->reset();

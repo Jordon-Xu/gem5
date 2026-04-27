@@ -800,6 +800,64 @@ class CMCPrefetcher(QueuedPrefetcher):
         "Use the previous execution's saved branch PC for the same load PC "
         "as a small head-delta chooser hint on top of the baseline CMC key",
     )
+    prev_branch_chooser_topk = Param.Unsigned(
+        2,
+        "Number of head-delta candidates to consider from the prev-branch "
+        "chooser",
+    )
+    prev_branch_chooser_use_taken = Param.Bool(
+        False,
+        "Include the previous branch taken bit in the prev-branch chooser key",
+    )
+    prev_branch_chooser_min_samples = Param.Unsigned(
+        8,
+        "Minimum samples before a prev-branch chooser entry can issue hints",
+    )
+    prev_branch_chooser_min_confidence = Param.Unsigned(
+        4,
+        "Minimum top-candidate count before a prev-branch chooser entry can "
+        "issue hints",
+    )
+    prev_branch_chooser_min_top_pct = Param.Unsigned(
+        60,
+        "Minimum percentage of samples belonging to the top head-delta "
+        "candidate before a prev-branch chooser entry can issue hints",
+    )
+    prev_branch_chooser_limit_on_hit = Param.Bool(
+        False,
+        "When the prev-branch chooser predicts a head delta, limit the issued "
+        "prefetches instead of issuing the full baseline CMC stream",
+    )
+    prev_branch_chooser_only_predicted = Param.Bool(
+        False,
+        "When limiting on chooser hit, issue only the predicted head delta "
+        "and no baseline fallback candidates",
+    )
+    prev_branch_chooser_baseline_fallback_degree = Param.Unsigned(
+        2,
+        "Number of baseline CMC candidates to keep after the predicted head "
+        "delta when limiting on chooser hit",
+    )
+    prev_branch_chooser_construct_predicted = Param.Bool(
+        True,
+        "When limiting on chooser hit, construct the predicted head address "
+        "from the predicted delta if it is not already in the baseline stream",
+    )
+    prev_branch_filter_biased = Param.Bool(
+        False,
+        "Ignore previous-branch chooser hints from branch PCs whose outcomes "
+        "are almost always one-sided",
+    )
+    prev_branch_bias_min_samples = Param.Unsigned(
+        64,
+        "Minimum samples before a previous branch PC can be classified as "
+        "biased",
+    )
+    prev_branch_bias_max_pct = Param.Unsigned(
+        98,
+        "Classify a previous branch PC as biased if its dominant outcome "
+        "reaches this percentage",
+    )
     prev_branch_dump_file = Param.String(
         "",
         "Optional CSV path for dumping prev-branch/next-address samples",

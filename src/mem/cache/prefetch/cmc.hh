@@ -40,15 +40,19 @@ class CMCPrefetcher : public Queued
             Addr addr;
             bool is_secure;
             bool has_prev_load_branch;
+            bool use_prev_branch_for_chooser;
             Addr prev_branch_pc;
             bool last_branch_taken;
             RecordEntry(Addr p, Addr a, bool s, bool has_prev,
-                        Addr branch_pc, bool taken)
+                        bool use_for_chooser, Addr branch_pc, bool taken)
                 : pc(p), addr(a), is_secure(s),
-                  has_prev_load_branch(has_prev), prev_branch_pc(branch_pc),
+                  has_prev_load_branch(has_prev),
+                  use_prev_branch_for_chooser(use_for_chooser),
+                  prev_branch_pc(branch_pc),
                   last_branch_taken(taken) {}
             RecordEntry()
                 : addr(0), is_secure(true), has_prev_load_branch(false),
+                  use_prev_branch_for_chooser(false),
                   prev_branch_pc(0),
                   last_branch_taken(false) {}
     };
@@ -105,12 +109,14 @@ class CMCPrefetcher : public Queued
     {
         Addr loadPc = 0;
         Addr prevBranchPc = 0;
+        bool prevBranchTaken = false;
 
         bool
         operator==(const ChooserKey &other) const
         {
             return loadPc == other.loadPc &&
-                   prevBranchPc == other.prevBranchPc;
+                   prevBranchPc == other.prevBranchPc &&
+                   prevBranchTaken == other.prevBranchTaken;
         }
     };
 
@@ -120,14 +126,26 @@ class CMCPrefetcher : public Queued
         operator()(const ChooserKey &key) const
         {
             return std::hash<Addr>{}(key.loadPc) ^
-                (std::hash<Addr>{}(key.prevBranchPc) << 1);
+                (std::hash<Addr>{}(key.prevBranchPc) << 1) ^
+                (std::hash<bool>{}(key.prevBranchTaken) << 2);
         }
     };
 
     struct HeadDeltaChooserEntry
     {
-        int64_t deltaBlocks = 0;
-        unsigned confidence = 0;
+        static constexpr unsigned MaxCandidates = 2;
+
+        int64_t deltaBlocks[MaxCandidates] = {0, 0};
+        unsigned counts[MaxCandidates] = {0, 0};
+        bool valid[MaxCandidates] = {false, false};
+        unsigned samples = 0;
+    };
+
+    struct PrevBranchPcStats
+    {
+        uint64_t taken = 0;
+        uint64_t notTaken = 0;
+        bool countedBiased = false;
     };
 
     struct Stats : public statistics::Group
@@ -139,6 +157,11 @@ class CMCPrefetcher : public Queued
         statistics::Scalar prevBranchTakenLookups;
         statistics::Scalar prevBranchNotTakenLookups;
         statistics::Scalar lookupAugmentedKeyDiffersFromBaseline;
+        statistics::Scalar prevBranchDistinctPCs;
+        statistics::Scalar prevBranchBiasedPCs;
+        statistics::Scalar prevBranchBiasedLookups;
+        statistics::Scalar prevBranchFilteredLookups;
+        statistics::Scalar prevBranchChooserUsableLookups;
         statistics::Scalar baselineLookupHits;
         statistics::Scalar augmentedLookupHits;
         statistics::Scalar prefetchCandidatesFromAugmentedKeys;
@@ -152,29 +175,52 @@ class CMCPrefetcher : public Queued
         statistics::Scalar augmentedTrainHits;
         statistics::Scalar chooserLookups;
         statistics::Scalar chooserHits;
+        statistics::Scalar chooserEligible;
+        statistics::Scalar chooserLowPuritySkips;
         statistics::Scalar chooserHeadPromotions;
+        statistics::Scalar chooserSecondChoicePromotions;
+        statistics::Scalar chooserConstructedHeads;
+        statistics::Scalar chooserLimitedIssues;
+        statistics::Scalar chooserDroppedCandidates;
         statistics::Scalar chooserTrainUpdates;
 
         statistics::Formula prevBranchFeatureValidRate;
         statistics::Formula baselineLookupHitRate;
         statistics::Formula augmentedLookupHitRate;
         statistics::Formula prevBranchTakenRate;
+        statistics::Formula prevBranchBiasedLookupRate;
+        statistics::Formula prevBranchFilteredRate;
+        statistics::Formula prevBranchChooserUsableRate;
         statistics::Formula trainPrevBranchFeatureValidRate;
         statistics::Formula baselineTrainHitRate;
         statistics::Formula augmentedTrainHitRate;
         statistics::Formula prevBranchTakenTrainRate;
         statistics::Formula chooserHitRate;
+        statistics::Formula chooserEligibleRate;
     } cmcStats;
 
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
     uint64_t acc_id = 1;
     const bool useLastBranchTaken;
+    const unsigned chooserTopK;
+    const bool chooserUseTaken;
+    const unsigned chooserMinSamples;
+    const unsigned chooserMinConfidence;
+    const unsigned chooserMinTopPct;
+    const bool chooserLimitOnHit;
+    const bool chooserOnlyPredicted;
+    const unsigned chooserBaselineFallbackDegree;
+    const bool chooserConstructPredicted;
+    const bool filterBiasedPrevBranches;
+    const unsigned branchBiasMinSamples;
+    const unsigned branchBiasMaxPct;
     const std::string prevBranchDumpFile;
     const uint64_t prevBranchDumpLimit;
     std::ofstream prevBranchDumpStream;
     uint64_t prevBranchDumpedSamples = 0;
     std::unordered_map<Addr, Addr> lastObservedBlockByPc;
+    std::unordered_map<Addr, PrevBranchPcStats> prevBranchPcStats;
     std::unordered_map<ChooserKey, HeadDeltaChooserEntry, ChooserKeyHash>
         headDeltaChooser;
 
@@ -192,13 +238,23 @@ class CMCPrefetcher : public Queued
 
     static const int STACK_SIZE = 4;
     std::deque<RecordEntry> trigger;
+    ChooserKey makeChooserKey(Addr load_pc, Addr prev_branch_pc,
+                              bool prev_branch_taken) const;
+    bool isPrevBranchPcBiased(const PrevBranchPcStats &stats) const;
+    bool updatePrevBranchPcStats(Addr prev_branch_pc, bool taken);
     void dumpPrevBranchSample(Addr pc, Addr block_addr, bool has_prev_pc,
                               Addr delta_blocks, bool prev_branch_valid,
                               Addr prev_branch_pc, bool prev_branch_taken,
+                              bool prev_branch_biased,
+                              bool prev_branch_usable,
                               bool cache_miss, bool match_entry);
     bool applyHeadDeltaHint(Addr block_addr, Addr pc,
                             bool prev_branch_valid, Addr prev_branch_pc,
+                            bool prev_branch_taken,
                             std::vector<AddrPriority> &addresses);
+    void updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
+                                bool prev_branch_taken,
+                                int64_t head_delta_blocks);
     // RecordEntry trigger_stack[STACK_SIZE];
 };
 

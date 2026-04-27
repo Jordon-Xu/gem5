@@ -44,11 +44,13 @@
 #ifndef __CPU_O3_CPU_HH__
 #define __CPU_O3_CPU_HH__
 
+#include <algorithm>
 #include <deque>
 #include <iostream>
 #include <list>
 #include <queue>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 #include "arch/generic/pcstate.hh"
@@ -125,8 +127,17 @@ class CPU : public BaseCPU
         Addr pc = 0;
         bool taken = false;
     };
+    struct BranchOutcomeStats
+    {
+        uint64_t taken = 0;
+        uint64_t notTaken = 0;
+    };
     static constexpr size_t MaxRecentBranchOutcomes = 64;
+    static constexpr uint64_t BranchBiasMinSamples = 64;
+    static constexpr unsigned BranchBiasMaxPct = 98;
     std::vector<std::deque<BranchOutcomeRecord>> recentBranchOutcomes;
+    std::vector<std::unordered_map<Addr, BranchOutcomeStats>>
+        branchOutcomeStats;
 
   private:
 
@@ -188,6 +199,13 @@ class CPU : public BaseCPU
     void
     recordBranchOutcome(ThreadID tid, InstSeqNum seq_num, Addr pc, bool taken)
     {
+        auto &stats = branchOutcomeStats[tid][pc];
+        if (taken) {
+            stats.taken++;
+        } else {
+            stats.notTaken++;
+        }
+
         auto &history = recentBranchOutcomes[tid];
         history.push_back({seq_num, pc, taken});
         if (history.size() > MaxRecentBranchOutcomes) {
@@ -196,12 +214,36 @@ class CPU : public BaseCPU
     }
 
     bool
+    isBranchOutcomeBiased(ThreadID tid, Addr pc) const
+    {
+        const auto &stats = branchOutcomeStats[tid];
+        const auto it = stats.find(pc);
+        if (it == stats.end()) {
+            return false;
+        }
+
+        const uint64_t taken = it->second.taken;
+        const uint64_t not_taken = it->second.notTaken;
+        const uint64_t total = taken + not_taken;
+        if (total < BranchBiasMinSamples || total == 0) {
+            return false;
+        }
+
+        const uint64_t dominant = std::max(taken, not_taken);
+        return dominant * 100 >= total * BranchBiasMaxPct;
+    }
+
+    bool
     getLastOlderBranchOutcome(ThreadID tid, InstSeqNum seq_num,
-                              Addr &pc, bool &taken) const
+                              Addr &pc, bool &taken,
+                              bool skip_biased = false) const
     {
         const auto &history = recentBranchOutcomes[tid];
         for (auto it = history.rbegin(); it != history.rend(); ++it) {
             if (it->seqNum < seq_num) {
+                if (skip_biased && isBranchOutcomeBiased(tid, it->pc)) {
+                    continue;
+                }
                 pc = it->pc;
                 taken = it->taken;
                 return true;
