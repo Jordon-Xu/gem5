@@ -137,8 +137,26 @@ class CMCPrefetcher : public Queued
 
         int64_t deltaBlocks[MaxCandidates] = {0, 0};
         unsigned counts[MaxCandidates] = {0, 0};
+        int utilityScores[MaxCandidates] = {0, 0};
         bool valid[MaxCandidates] = {false, false};
         unsigned samples = 0;
+    };
+
+    struct HeadDeltaHintResult
+    {
+        bool changed = false;
+        bool hasPrediction = false;
+        int64_t predictedDeltaBlocks = 0;
+        ChooserKey chooserKey;
+    };
+
+    struct PendingHeadPrediction
+    {
+        bool hasBaselineHead = false;
+        int64_t baselineHeadDeltaBlocks = 0;
+        bool hasChooserPrediction = false;
+        int64_t chooserHeadDeltaBlocks = 0;
+        ChooserKey chooserKey;
     };
 
     struct PrevBranchPcStats
@@ -185,6 +203,20 @@ class CMCPrefetcher : public Queued
         statistics::Scalar chooserSecondChoicePromotions;
         statistics::Scalar chooserConstructedHeads;
         statistics::Scalar chooserSelectiveConstructedHeads;
+        statistics::Scalar chooserConstructThresholdSkips;
+        statistics::Scalar chooserConstructCacheSkips;
+        statistics::Scalar chooserUtilityConstructSkips;
+        statistics::Scalar chooserUtilityLimitSkips;
+        statistics::Scalar headPredictionFeedbacks;
+        statistics::Scalar baselineHeadCorrect;
+        statistics::Scalar chooserHeadPredictions;
+        statistics::Scalar chooserHeadCorrect;
+        statistics::Scalar chooserOnlyCorrect;
+        statistics::Scalar baselineOnlyCorrect;
+        statistics::Scalar chooserSameAsBaseline;
+        statistics::Scalar chooserDiffersFromBaseline;
+        statistics::Scalar chooserUtilityPositiveUpdates;
+        statistics::Scalar chooserUtilityNegativeUpdates;
         statistics::Scalar chooserLimitedIssues;
         statistics::Scalar chooserDroppedCandidates;
         statistics::Scalar chooserTrainUpdates;
@@ -218,6 +250,14 @@ class CMCPrefetcher : public Queued
     const unsigned chooserBaselineFallbackDegree;
     const bool chooserConstructPredicted;
     const bool chooserSelectiveConstruct;
+    const unsigned chooserConstructMinSamples;
+    const unsigned chooserConstructMinConfidence;
+    const unsigned chooserConstructMinTopPct;
+    const bool chooserConstructCacheFilter;
+    const bool chooserUseUtilityScore;
+    const int chooserConstructMinScore;
+    const int chooserThrottleMinScore;
+    const int chooserUtilityMaxScore;
     const bool filterBiasedPrevBranches;
     const unsigned branchBiasMinSamples;
     const unsigned branchBiasMaxPct;
@@ -226,6 +266,7 @@ class CMCPrefetcher : public Queued
     std::ofstream prevBranchDumpStream;
     uint64_t prevBranchDumpedSamples = 0;
     std::unordered_map<Addr, Addr> lastObservedBlockByPc;
+    std::unordered_map<Addr, PendingHeadPrediction> pendingHeadPredictions;
     std::unordered_map<Addr, PrevBranchPcStats> prevBranchPcStats;
     std::unordered_map<ChooserKey, HeadDeltaChooserEntry, ChooserKeyHash>
         headDeltaChooser;
@@ -254,10 +295,14 @@ class CMCPrefetcher : public Queued
                               bool prev_branch_biased,
                               bool prev_branch_usable,
                               bool cache_miss, bool match_entry);
-    bool applyHeadDeltaHint(Addr block_addr, Addr pc,
-                            bool prev_branch_valid, Addr prev_branch_pc,
-                            bool prev_branch_taken,
-                            std::vector<AddrPriority> &addresses);
+    HeadDeltaHintResult applyHeadDeltaHint(Addr block_addr, Addr pc,
+                                           bool prev_branch_valid,
+                                           Addr prev_branch_pc,
+                                           bool prev_branch_taken,
+                                           std::vector<AddrPriority> &addresses,
+                                           const CacheAccessor &cache,
+                                           bool is_secure);
+    void evaluatePendingHeadPrediction(Addr pc, int64_t actual_delta_blocks);
     void updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
                                 bool prev_branch_taken,
                                 int64_t head_delta_blocks);

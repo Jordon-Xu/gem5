@@ -848,6 +848,44 @@ class CMCPrefetcher(QueuedPrefetcher):
         "When not limiting on chooser hit, construct a missing predicted head "
         "address and issue it before the unchanged baseline CMC stream",
     )
+    prev_branch_chooser_construct_min_samples = Param.Unsigned(
+        0,
+        "Additional minimum samples required before constructing a missing "
+        "predicted head; 0 reuses the normal chooser eligibility threshold",
+    )
+    prev_branch_chooser_construct_min_confidence = Param.Unsigned(
+        0,
+        "Additional minimum candidate count required before constructing a "
+        "missing predicted head; 0 reuses the normal chooser threshold",
+    )
+    prev_branch_chooser_construct_min_top_pct = Param.Unsigned(
+        0,
+        "Additional minimum percentage of samples for the specific predicted "
+        "delta before constructing a missing head; 0 disables this extra check",
+    )
+    prev_branch_chooser_construct_cache_filter = Param.Bool(
+        True,
+        "Skip constructed predicted heads that are already in cache or MSHR",
+    )
+    prev_branch_chooser_use_utility_score = Param.Bool(
+        False,
+        "Use online same-load-PC next-delta feedback to gate constructed "
+        "heads and throttling decisions",
+    )
+    prev_branch_chooser_construct_min_score = Param.Int(
+        2,
+        "Minimum utility score required before constructing a missing "
+        "chooser-predicted head",
+    )
+    prev_branch_chooser_throttle_min_score = Param.Int(
+        4,
+        "Minimum utility score required before limiting the baseline CMC "
+        "stream on a chooser hit",
+    )
+    prev_branch_chooser_utility_max_score = Param.Int(
+        31,
+        "Saturation magnitude for per-candidate chooser utility scores",
+    )
     prev_branch_filter_biased = Param.Bool(
         False,
         "Ignore previous-branch chooser hints from branch PCs whose outcomes "
