@@ -843,6 +843,11 @@ class CMCPrefetcher(QueuedPrefetcher):
         "When limiting on chooser hit, construct the predicted head address "
         "from the predicted delta if it is not already in the baseline stream",
     )
+    prev_branch_chooser_selective_construct = Param.Bool(
+        False,
+        "When not limiting on chooser hit, construct a missing predicted head "
+        "address and issue it before the unchanged baseline CMC stream",
+    )
     prev_branch_filter_biased = Param.Bool(
         False,
         "Ignore previous-branch chooser hints from branch PCs whose outcomes "

@@ -177,9 +177,14 @@ class CMCPrefetcher : public Queued
         statistics::Scalar chooserHits;
         statistics::Scalar chooserEligible;
         statistics::Scalar chooserLowPuritySkips;
+        statistics::Scalar chooserPredictedAlreadyHead;
+        statistics::Scalar chooserPredictedFoundInStream;
+        statistics::Scalar chooserPredictedNotInStream;
+        statistics::Scalar chooserNoAction;
         statistics::Scalar chooserHeadPromotions;
         statistics::Scalar chooserSecondChoicePromotions;
         statistics::Scalar chooserConstructedHeads;
+        statistics::Scalar chooserSelectiveConstructedHeads;
         statistics::Scalar chooserLimitedIssues;
         statistics::Scalar chooserDroppedCandidates;
         statistics::Scalar chooserTrainUpdates;
@@ -212,6 +217,7 @@ class CMCPrefetcher : public Queued
     const bool chooserOnlyPredicted;
     const unsigned chooserBaselineFallbackDegree;
     const bool chooserConstructPredicted;
+    const bool chooserSelectiveConstruct;
     const bool filterBiasedPrevBranches;
     const unsigned branchBiasMinSamples;
     const unsigned branchBiasMaxPct;

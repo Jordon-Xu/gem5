@@ -73,6 +73,17 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "Chooser hits that pass the sample and confidence thresholds"),
     ADD_STAT(chooserLowPuritySkips, statistics::units::Count::get(),
         "Chooser hits skipped because the top head-delta share is too low"),
+    ADD_STAT(chooserPredictedAlreadyHead, statistics::units::Count::get(),
+        "Eligible chooser predictions that already match the baseline CMC "
+        "head candidate"),
+    ADD_STAT(chooserPredictedFoundInStream, statistics::units::Count::get(),
+        "Eligible chooser predictions found somewhere in the baseline CMC "
+        "candidate stream"),
+    ADD_STAT(chooserPredictedNotInStream, statistics::units::Count::get(),
+        "Eligible chooser predictions not found in the baseline CMC "
+        "candidate stream"),
+    ADD_STAT(chooserNoAction, statistics::units::Count::get(),
+        "Eligible chooser hits that did not change the issued candidates"),
     ADD_STAT(chooserHeadPromotions, statistics::units::Count::get(),
         "Lookups where the chooser promotes a matching head delta"),
     ADD_STAT(chooserSecondChoicePromotions, statistics::units::Count::get(),
@@ -80,6 +91,9 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(chooserConstructedHeads, statistics::units::Count::get(),
         "Chooser hits where the predicted head address was constructed "
         "instead of found in the baseline stream"),
+    ADD_STAT(chooserSelectiveConstructedHeads, statistics::units::Count::get(),
+        "Chooser hits where a missing predicted head was constructed without "
+        "throttling the baseline stream"),
     ADD_STAT(chooserLimitedIssues, statistics::units::Count::get(),
         "Chooser hits that limited the issued prefetch candidate list"),
     ADD_STAT(chooserDroppedCandidates, statistics::units::Count::get(),
@@ -188,6 +202,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserOnlyPredicted(p.prev_branch_chooser_only_predicted),
     chooserBaselineFallbackDegree(p.prev_branch_chooser_baseline_fallback_degree),
     chooserConstructPredicted(p.prev_branch_chooser_construct_predicted),
+    chooserSelectiveConstruct(p.prev_branch_chooser_selective_construct),
     filterBiasedPrevBranches(p.prev_branch_filter_biased),
     branchBiasMinSamples(p.prev_branch_bias_min_samples),
     branchBiasMaxPct(std::min<unsigned>(p.prev_branch_bias_max_pct, 100)),
@@ -350,8 +365,19 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
             }
         }
 
-        if (!predicted_found && chooserLimitOnHit &&
-            chooserConstructPredicted) {
+        if (predicted_found) {
+            cmcStats.chooserPredictedFoundInStream++;
+            if (predicted_idx == 0) {
+                cmcStats.chooserPredictedAlreadyHead++;
+            }
+        } else {
+            cmcStats.chooserPredictedNotInStream++;
+        }
+
+        const bool can_construct =
+            chooserConstructPredicted &&
+            (chooserLimitOnHit || chooserSelectiveConstruct);
+        if (!predicted_found && can_construct) {
             const int64_t predicted_block =
                 static_cast<int64_t>(block_addr) + predicted_delta;
             if (predicted_block >= 0) {
@@ -395,17 +421,32 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
             if (predicted_constructed) {
                 cmcStats.chooserConstructedHeads++;
             }
+            if (predicted_found && predicted_idx != 0) {
+                cmcStats.chooserHeadPromotions++;
+                if (candidate == 1) {
+                    cmcStats.chooserSecondChoicePromotions++;
+                }
+            }
+            return true;
+        } else if (predicted_constructed) {
+            addresses.insert(addresses.begin(), predicted_addr);
+            cmcStats.chooserConstructedHeads++;
+            cmcStats.chooserSelectiveConstructedHeads++;
+            return true;
         } else if (predicted_found && predicted_idx != 0) {
             std::swap(addresses[0], addresses[predicted_idx]);
+            cmcStats.chooserHeadPromotions++;
+            if (candidate == 1) {
+                cmcStats.chooserSecondChoicePromotions++;
+            }
+            return true;
+        } else if (predicted_found && predicted_idx == 0) {
+            cmcStats.chooserNoAction++;
+            return false;
         }
-
-        cmcStats.chooserHeadPromotions++;
-        if (candidate == 1) {
-            cmcStats.chooserSecondChoicePromotions++;
-        }
-        return true;
     }
 
+    cmcStats.chooserNoAction++;
     return false;
 }
 
