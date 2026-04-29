@@ -130,6 +130,8 @@ class Base : public ClockedObject
         Addr paddress;
         /** Whether this event comes from a cache miss */
         bool cacheMiss;
+        /** Whether this event hits a block previously fetched by this prefetcher */
+        bool prefetched;
         /** Pointer to the associated request data */
         uint8_t *data;
         /** Whether a previous same-load-PC branch state was attached. */
@@ -224,6 +226,12 @@ class Base : public ClockedObject
         }
 
         bool
+        wasPrefetched() const
+        {
+            return prefetched;
+        }
+
+        bool
         hasPrevLoadBranchOutcome() const
         {
             return validPrevLoadBranchOutcome;
@@ -291,7 +299,8 @@ class Base : public ClockedObject
          *        used to train the prefetcher
          * @param miss whether this event comes from a cache miss
          */
-        PrefetchInfo(PacketPtr pkt, Addr addr, bool miss);
+        PrefetchInfo(PacketPtr pkt, Addr addr, bool miss,
+                     bool prefetched = false);
 
         /**
          * Constructs a PrefetchInfo using a new address value and

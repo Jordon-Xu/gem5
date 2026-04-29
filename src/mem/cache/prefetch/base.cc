@@ -57,11 +57,12 @@ namespace gem5
 namespace prefetch
 {
 
-Base::PrefetchInfo::PrefetchInfo(PacketPtr pkt, Addr addr, bool miss)
+Base::PrefetchInfo::PrefetchInfo(PacketPtr pkt, Addr addr, bool miss,
+                                 bool prefetched)
   : address(addr), pc(pkt->req->hasPC() ? pkt->req->getPC() : 0),
     requestorId(pkt->req->requestorId()), validPC(pkt->req->hasPC()),
     secure(pkt->isSecure()), size(pkt->req->getSize()), write(pkt->isWrite()),
-    paddress(pkt->req->getPaddr()), cacheMiss(miss),
+    paddress(pkt->req->getPaddr()), cacheMiss(miss), prefetched(prefetched),
     validPrevLoadBranchOutcome(false), prevLoadBranchPC(0),
     prevLoadBranchTaken(false)
 {
@@ -85,6 +86,7 @@ Base::PrefetchInfo::PrefetchInfo(PrefetchInfo const &pfi, Addr addr)
   : address(addr), pc(pfi.pc), requestorId(pfi.requestorId),
     validPC(pfi.validPC), secure(pfi.secure), size(pfi.size),
     write(pfi.write), paddress(pfi.paddress), cacheMiss(pfi.cacheMiss),
+    prefetched(pfi.prefetched),
     data(nullptr),
     validPrevLoadBranchOutcome(pfi.validPrevLoadBranchOutcome),
     prevLoadBranchPC(pfi.prevLoadBranchPC),
@@ -269,10 +271,12 @@ Base::probeNotify(const CacheAccessProbeArg &acc, bool miss)
     // Verify this access type is observed by prefetcher
     if (observeAccess(pkt, miss, has_been_prefetched)) {
         if (useVirtualAddresses && pkt->req->hasVaddr()) {
-            PrefetchInfo pfi(pkt, pkt->req->getVaddr(), miss);
+            PrefetchInfo pfi(pkt, pkt->req->getVaddr(), miss,
+                             has_been_prefetched);
             notify(acc, pfi);
         } else if (!useVirtualAddresses) {
-            PrefetchInfo pfi(pkt, pkt->req->getPaddr(), miss);
+            PrefetchInfo pfi(pkt, pkt->req->getPaddr(), miss,
+                             has_been_prefetched);
             notify(acc, pfi);
         }
     }
