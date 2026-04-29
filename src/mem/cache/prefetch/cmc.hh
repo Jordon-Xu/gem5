@@ -138,6 +138,7 @@ class CMCPrefetcher : public Queued
         int64_t deltaBlocks[MaxCandidates] = {0, 0};
         unsigned counts[MaxCandidates] = {0, 0};
         int utilityScores[MaxCandidates] = {0, 0};
+        int limitScores[MaxCandidates] = {0, 0};
         bool valid[MaxCandidates] = {false, false};
         unsigned samples = 0;
     };
@@ -158,6 +159,25 @@ class CMCPrefetcher : public Queued
         bool fromAccessPredictor = false;
         int64_t chooserHeadDeltaBlocks = 0;
         ChooserKey chooserKey;
+        std::vector<int64_t> baselineStreamDeltaBlocks;
+        unsigned limitFallbackDegree = 0;
+    };
+
+    enum class CandidateSource : uint8_t
+    {
+        BaselineHead,
+        BaselineFallback,
+        BaselineTail,
+        ChooserHead,
+        AccessHead
+    };
+
+    struct TrackedPrefetchSource
+    {
+        CandidateSource source = CandidateSource::BaselineTail;
+        bool hasChooser = false;
+        ChooserKey chooserKey;
+        int64_t chooserDeltaBlocks = 0;
     };
 
     struct PrevBranchPcStats
@@ -218,6 +238,9 @@ class CMCPrefetcher : public Queued
         statistics::Scalar chooserDiffersFromBaseline;
         statistics::Scalar chooserUtilityPositiveUpdates;
         statistics::Scalar chooserUtilityNegativeUpdates;
+        statistics::Scalar chooserLimitPositiveUpdates;
+        statistics::Scalar chooserLimitNegativeUpdates;
+        statistics::Scalar chooserTailLimitSkips;
         statistics::Scalar accessHeadLookups;
         statistics::Scalar accessHeadEligible;
         statistics::Scalar accessHeadIssued;
@@ -228,6 +251,17 @@ class CMCPrefetcher : public Queued
         statistics::Scalar chooserAdaptiveLimitIssues;
         statistics::Scalar chooserLimitedIssues;
         statistics::Scalar chooserDroppedCandidates;
+        statistics::Scalar sourceTrackedBaselineHead;
+        statistics::Scalar sourceTrackedBaselineFallback;
+        statistics::Scalar sourceTrackedBaselineTail;
+        statistics::Scalar sourceTrackedChooserHead;
+        statistics::Scalar sourceTrackedAccessHead;
+        statistics::Scalar sourceUsefulFeedbacks;
+        statistics::Scalar sourceUsefulBaselineHead;
+        statistics::Scalar sourceUsefulBaselineFallback;
+        statistics::Scalar sourceUsefulBaselineTail;
+        statistics::Scalar sourceUsefulChooserHead;
+        statistics::Scalar sourceUsefulAccessHead;
         statistics::Scalar chooserTrainUpdates;
 
         statistics::Formula prevBranchFeatureValidRate;
@@ -268,6 +302,7 @@ class CMCPrefetcher : public Queued
     const bool chooserUseUtilityScore;
     const int chooserConstructMinScore;
     const int chooserThrottleMinScore;
+    const int chooserTailThrottleMinScore;
     const int chooserUtilityMaxScore;
     const bool prevBranchAccessPredictor;
     const int prevBranchAccessMinScore;
@@ -285,6 +320,7 @@ class CMCPrefetcher : public Queued
     std::unordered_map<Addr, PrevBranchPcStats> prevBranchPcStats;
     std::unordered_map<ChooserKey, HeadDeltaChooserEntry, ChooserKeyHash>
         headDeltaChooser;
+    std::unordered_map<Addr, TrackedPrefetchSource> trackedPrefetchSources;
 
   public:
     CMCPrefetcher(const CMCPrefetcherParams &p);
@@ -299,6 +335,7 @@ class CMCPrefetcher : public Queued
     }
 
     static const int STACK_SIZE = 4;
+    static constexpr std::size_t MaxTrackedPrefetchSources = 262144;
     std::deque<RecordEntry> trigger;
     ChooserKey makeChooserKey(Addr load_pc, Addr prev_branch_pc,
                               bool prev_branch_taken) const;
@@ -325,6 +362,13 @@ class CMCPrefetcher : public Queued
                                    const CacheAccessor &cache,
                                    bool is_secure);
     void evaluatePendingHeadPrediction(Addr pc, int64_t actual_delta_blocks);
+    void notePrefetchSource(Addr addr, const TrackedPrefetchSource &source);
+    void observePrefetchSourceFeedback(Addr block_addr);
+    void recordIssuedPrefetchSources(
+        Addr trigger_block_addr,
+        const std::vector<AddrPriority> &issued,
+        const std::vector<AddrPriority> &baseline_stream,
+        const HeadDeltaHintResult &hint);
     void updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
                                 bool prev_branch_taken,
                                 int64_t head_delta_blocks);

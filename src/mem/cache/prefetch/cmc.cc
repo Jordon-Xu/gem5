@@ -132,6 +132,15 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "Chooser utility score increments from next-delta feedback"),
     ADD_STAT(chooserUtilityNegativeUpdates, statistics::units::Count::get(),
         "Chooser utility score decrements from next-delta feedback"),
+    ADD_STAT(chooserLimitPositiveUpdates, statistics::units::Count::get(),
+        "Chooser stream-limit score increments when limiting would keep the "
+        "next same-load-PC delta or the delta was absent from the CMC stream"),
+    ADD_STAT(chooserLimitNegativeUpdates, statistics::units::Count::get(),
+        "Chooser stream-limit score decrements when the next same-load-PC "
+        "delta was only present in the dropped CMC tail"),
+    ADD_STAT(chooserTailLimitSkips, statistics::units::Count::get(),
+        "Adaptive limit candidates skipped because their stream-tail safety "
+        "score was below the throttle threshold"),
     ADD_STAT(accessHeadLookups, statistics::units::Count::get(),
         "Ordinary access-time branch-head predictor lookups"),
     ADD_STAT(accessHeadEligible, statistics::units::Count::get(),
@@ -156,6 +165,34 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "Chooser hits that limited the issued prefetch candidate list"),
     ADD_STAT(chooserDroppedCandidates, statistics::units::Count::get(),
         "Prefetch candidates dropped because the chooser limited a stream"),
+    ADD_STAT(sourceTrackedBaselineHead, statistics::units::Count::get(),
+        "Tracked issued prefetch candidates from the baseline CMC head"),
+    ADD_STAT(sourceTrackedBaselineFallback, statistics::units::Count::get(),
+        "Tracked issued prefetch candidates from the baseline CMC fallback "
+        "prefix"),
+    ADD_STAT(sourceTrackedBaselineTail, statistics::units::Count::get(),
+        "Tracked issued prefetch candidates from the baseline CMC tail"),
+    ADD_STAT(sourceTrackedChooserHead, statistics::units::Count::get(),
+        "Tracked issued prefetch candidates introduced or promoted by the "
+        "branch chooser"),
+    ADD_STAT(sourceTrackedAccessHead, statistics::units::Count::get(),
+        "Tracked issued prefetch candidates from the access-time branch-head "
+        "predictor"),
+    ADD_STAT(sourceUsefulFeedbacks, statistics::units::Count::get(),
+        "Useful prefetched blocks matched back to a tracked CMC candidate "
+        "source"),
+    ADD_STAT(sourceUsefulBaselineHead, statistics::units::Count::get(),
+        "Useful tracked prefetches from the baseline CMC head"),
+    ADD_STAT(sourceUsefulBaselineFallback, statistics::units::Count::get(),
+        "Useful tracked prefetches from the baseline CMC fallback prefix"),
+    ADD_STAT(sourceUsefulBaselineTail, statistics::units::Count::get(),
+        "Useful tracked prefetches from the baseline CMC tail"),
+    ADD_STAT(sourceUsefulChooserHead, statistics::units::Count::get(),
+        "Useful tracked prefetches introduced or promoted by the branch "
+        "chooser"),
+    ADD_STAT(sourceUsefulAccessHead, statistics::units::Count::get(),
+        "Useful tracked prefetches from the access-time branch-head "
+        "predictor"),
     ADD_STAT(chooserTrainUpdates, statistics::units::Count::get(),
         "Training completions that update the prev-branch head-delta chooser"),
     ADD_STAT(prevBranchFeatureValidRate, statistics::units::Ratio::get(),
@@ -271,6 +308,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserUseUtilityScore(p.prev_branch_chooser_use_utility_score),
     chooserConstructMinScore(p.prev_branch_chooser_construct_min_score),
     chooserThrottleMinScore(p.prev_branch_chooser_throttle_min_score),
+    chooserTailThrottleMinScore(p.prev_branch_chooser_tail_throttle_min_score),
     chooserUtilityMaxScore(std::max(1, p.prev_branch_chooser_utility_max_score)),
     prevBranchAccessPredictor(p.prev_branch_access_predictor),
     prevBranchAccessMinScore(p.prev_branch_access_min_score),
@@ -465,8 +503,12 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
         const bool utility_limit_allowed =
             !chooserUseUtilityScore ||
             entry.utilityScores[candidate] >= chooserThrottleMinScore;
+        const bool tail_limit_allowed =
+            !chooserAdaptiveLimit ||
+            entry.limitScores[candidate] >= chooserTailThrottleMinScore;
         const bool adaptive_limit_active =
-            chooserAdaptiveLimit && utility_limit_allowed;
+            chooserAdaptiveLimit && utility_limit_allowed &&
+            tail_limit_allowed;
         const bool limit_this_hint =
             (chooserLimitOnHit && utility_limit_allowed) ||
             adaptive_limit_active;
@@ -520,6 +562,10 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
         if ((chooserLimitOnHit || chooserAdaptiveLimit) &&
             !utility_limit_allowed) {
             cmcStats.chooserUtilityLimitSkips++;
+        }
+        if (chooserAdaptiveLimit && utility_limit_allowed &&
+            !tail_limit_allowed) {
+            cmcStats.chooserTailLimitSkips++;
         }
 
         if (limit_this_hint) {
@@ -653,6 +699,12 @@ CMCPrefetcher::issueAccessHeadPrediction(Addr block_addr, Addr pc,
             }
 
             addresses.push_back(AddrPriority(predicted_addr, 0));
+            TrackedPrefetchSource source;
+            source.source = CandidateSource::AccessHead;
+            source.hasChooser = true;
+            source.chooserKey = chooser_key;
+            source.chooserDeltaBlocks = entry.deltaBlocks[candidate];
+            notePrefetchSource(predicted_addr, source);
             cmcStats.accessHeadIssued++;
             if (distance > 1) {
                 cmcStats.accessHeadLookaheadIssued++;
@@ -745,7 +797,200 @@ CMCPrefetcher::evaluatePendingHeadPrediction(Addr pc,
                 -chooserUtilityMaxScore, entry.utilityScores[i] - 1);
             cmcStats.chooserUtilityNegativeUpdates++;
         }
+
+        if (!pending.baselineStreamDeltaBlocks.empty()) {
+            bool kept_by_limit =
+                actual_delta_blocks == pending.chooserHeadDeltaBlocks;
+            bool only_in_dropped_tail = false;
+            unsigned fallback_count = 0;
+
+            for (const auto delta : pending.baselineStreamDeltaBlocks) {
+                if (delta == pending.chooserHeadDeltaBlocks) {
+                    continue;
+                }
+
+                if (fallback_count < pending.limitFallbackDegree) {
+                    if (delta == actual_delta_blocks) {
+                        kept_by_limit = true;
+                    }
+                    fallback_count++;
+                } else if (delta == actual_delta_blocks) {
+                    only_in_dropped_tail = true;
+                }
+            }
+
+            if (only_in_dropped_tail && !kept_by_limit) {
+                entry.limitScores[i] = std::max(
+                    -chooserUtilityMaxScore, entry.limitScores[i] - 4);
+                cmcStats.chooserLimitNegativeUpdates++;
+            } else {
+                entry.limitScores[i] = std::min(
+                    chooserUtilityMaxScore, entry.limitScores[i] + 1);
+                cmcStats.chooserLimitPositiveUpdates++;
+            }
+        }
         return;
+    }
+}
+
+void
+CMCPrefetcher::notePrefetchSource(Addr addr,
+                                  const TrackedPrefetchSource &source)
+{
+    const Addr block_addr = blockIndex(addr);
+    if (trackedPrefetchSources.size() >= MaxTrackedPrefetchSources) {
+        trackedPrefetchSources.erase(trackedPrefetchSources.begin());
+    }
+    trackedPrefetchSources[block_addr] = source;
+
+    switch (source.source) {
+      case CandidateSource::BaselineHead:
+        cmcStats.sourceTrackedBaselineHead++;
+        break;
+      case CandidateSource::BaselineFallback:
+        cmcStats.sourceTrackedBaselineFallback++;
+        break;
+      case CandidateSource::BaselineTail:
+        cmcStats.sourceTrackedBaselineTail++;
+        break;
+      case CandidateSource::ChooserHead:
+        cmcStats.sourceTrackedChooserHead++;
+        break;
+      case CandidateSource::AccessHead:
+        cmcStats.sourceTrackedAccessHead++;
+        break;
+    }
+}
+
+void
+CMCPrefetcher::observePrefetchSourceFeedback(Addr block_addr)
+{
+    const auto source_it = trackedPrefetchSources.find(block_addr);
+    if (source_it == trackedPrefetchSources.end()) {
+        return;
+    }
+
+    const TrackedPrefetchSource source = source_it->second;
+    trackedPrefetchSources.erase(source_it);
+    cmcStats.sourceUsefulFeedbacks++;
+
+    switch (source.source) {
+      case CandidateSource::BaselineHead:
+        cmcStats.sourceUsefulBaselineHead++;
+        break;
+      case CandidateSource::BaselineFallback:
+        cmcStats.sourceUsefulBaselineFallback++;
+        break;
+      case CandidateSource::BaselineTail:
+        cmcStats.sourceUsefulBaselineTail++;
+        break;
+      case CandidateSource::ChooserHead:
+        cmcStats.sourceUsefulChooserHead++;
+        break;
+      case CandidateSource::AccessHead:
+        cmcStats.sourceUsefulAccessHead++;
+        break;
+    }
+
+    if (!source.hasChooser) {
+        return;
+    }
+
+    auto chooser_it = headDeltaChooser.find(source.chooserKey);
+    if (chooser_it == headDeltaChooser.end()) {
+        return;
+    }
+
+    auto &entry = chooser_it->second;
+    for (unsigned i = 0; i < HeadDeltaChooserEntry::MaxCandidates; ++i) {
+        if (!entry.valid[i] ||
+            entry.deltaBlocks[i] != source.chooserDeltaBlocks) {
+            continue;
+        }
+
+        switch (source.source) {
+          case CandidateSource::BaselineTail:
+            // A useful tail candidate is direct evidence against limiting this
+            // chooser stream too aggressively.
+            entry.limitScores[i] = std::max(
+                -chooserUtilityMaxScore, entry.limitScores[i] - 8);
+            break;
+          case CandidateSource::ChooserHead:
+          case CandidateSource::AccessHead:
+            // Useful branch-issued heads should become easier to construct or
+            // issue on access-path opportunities.
+            entry.utilityScores[i] = std::min(
+                chooserUtilityMaxScore, entry.utilityScores[i] + 2);
+            entry.limitScores[i] = std::min(
+                chooserUtilityMaxScore, entry.limitScores[i] + 1);
+            break;
+          case CandidateSource::BaselineHead:
+          case CandidateSource::BaselineFallback:
+            // These candidates would survive conservative limiting.
+            entry.limitScores[i] = std::min(
+                chooserUtilityMaxScore, entry.limitScores[i] + 1);
+            break;
+        }
+        return;
+    }
+}
+
+void
+CMCPrefetcher::recordIssuedPrefetchSources(
+    Addr trigger_block_addr,
+    const std::vector<AddrPriority> &issued,
+    const std::vector<AddrPriority> &baseline_stream,
+    const HeadDeltaHintResult &hint)
+{
+    if (issued.empty()) {
+        return;
+    }
+
+    auto find_baseline_pos = [this, &baseline_stream](Addr block_addr) {
+        for (std::size_t i = 0; i < baseline_stream.size(); ++i) {
+            if (blockIndex(baseline_stream[i].first) == block_addr) {
+                return i;
+            }
+        }
+        return baseline_stream.size();
+    };
+
+    std::size_t predicted_pos = baseline_stream.size();
+    if (hint.hasPrediction) {
+        const int64_t predicted_block =
+            static_cast<int64_t>(trigger_block_addr) +
+            hint.predictedDeltaBlocks;
+        if (predicted_block >= 0) {
+            predicted_pos = find_baseline_pos(static_cast<Addr>(predicted_block));
+        }
+    }
+
+    for (const auto &candidate : issued) {
+        const Addr candidate_block = blockIndex(candidate.first);
+        const std::size_t baseline_pos = find_baseline_pos(candidate_block);
+        const int64_t candidate_delta =
+            static_cast<int64_t>(candidate_block) -
+            static_cast<int64_t>(trigger_block_addr);
+
+        TrackedPrefetchSource source;
+        source.hasChooser = hint.hasPrediction;
+        source.chooserKey = hint.chooserKey;
+        source.chooserDeltaBlocks = hint.predictedDeltaBlocks;
+
+        if (hint.hasPrediction &&
+            candidate_delta == hint.predictedDeltaBlocks &&
+            (baseline_pos != 0 || predicted_pos == baseline_stream.size())) {
+            source.source = CandidateSource::ChooserHead;
+        } else if (baseline_pos == 0) {
+            source.source = CandidateSource::BaselineHead;
+        } else if (baseline_pos < baseline_stream.size() &&
+                   baseline_pos <= chooserBaselineFallbackDegree) {
+            source.source = CandidateSource::BaselineFallback;
+        } else {
+            source.source = CandidateSource::BaselineTail;
+        }
+
+        notePrefetchSource(candidate.first, source);
     }
 }
 
@@ -765,6 +1010,7 @@ CMCPrefetcher::updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
                 std::swap(entry.deltaBlocks[0], entry.deltaBlocks[1]);
                 std::swap(entry.counts[0], entry.counts[1]);
                 std::swap(entry.utilityScores[0], entry.utilityScores[1]);
+                std::swap(entry.limitScores[0], entry.limitScores[1]);
                 std::swap(entry.valid[0], entry.valid[1]);
             }
             return;
@@ -777,6 +1023,7 @@ CMCPrefetcher::updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
             entry.deltaBlocks[i] = head_delta_blocks;
             entry.counts[i] = 1;
             entry.utilityScores[i] = 0;
+            entry.limitScores[i] = 0;
             return;
         }
     }
@@ -788,6 +1035,7 @@ CMCPrefetcher::updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
         entry.deltaBlocks[1] = head_delta_blocks;
         entry.counts[1] = 1;
         entry.utilityScores[1] = 0;
+        entry.limitScores[1] = 0;
         entry.valid[1] = true;
     }
 }
@@ -807,6 +1055,9 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     Addr addr = pfi.getAddr();
     Addr block_addr = blockIndex(addr); // takes off 6 Least Significant Bits for cache line
     bool is_secure = pfi.isSecure();
+    if (pfi.wasPrefetched()) {
+        observePrefetchSourceFeedback(block_addr);
+    }
     const bool prev_load_branch_valid = pfi.hasPrevLoadBranchOutcome();
     const Addr prev_load_branch_pc =
         prev_load_branch_valid ? pfi.getPrevLoadBranchPC() : 0;
@@ -889,6 +1140,7 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
         for (auto addr: match_entry->addresses) {
             addresses.push_back(AddrPriority(addr, 0));
         }
+        const std::vector<AddrPriority> baseline_stream = addresses;
         if (prev_load_branch_valid) {
             cmcStats.prefetchCandidatesFromAugmentedKeys +=
                 match_entry->addresses.size();
@@ -899,6 +1151,13 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             pending.baselineHeadDeltaBlocks =
                 static_cast<int64_t>(blockIndex(addresses.front().first)) -
                 static_cast<int64_t>(block_addr);
+            pending.limitFallbackDegree = chooserBaselineFallbackDegree;
+            pending.baselineStreamDeltaBlocks.reserve(addresses.size());
+            for (const auto &candidate_addr : addresses) {
+                pending.baselineStreamDeltaBlocks.push_back(
+                    static_cast<int64_t>(blockIndex(candidate_addr.first)) -
+                    static_cast<int64_t>(block_addr));
+            }
         }
         HeadDeltaHintResult hint = applyHeadDeltaHint(
             block_addr, pc, prev_load_branch_usable,
@@ -914,6 +1173,7 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
         } else {
             pendingHeadPredictions.erase(pc);
         }
+        recordIssuedPrefetchSources(block_addr, addresses, baseline_stream, hint);
     } else {
         pendingHeadPredictions.erase(pc);
     }

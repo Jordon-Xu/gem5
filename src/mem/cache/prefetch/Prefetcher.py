@@ -893,6 +893,13 @@ class CMCPrefetcher(QueuedPrefetcher):
         "Minimum utility score required before limiting the baseline CMC "
         "stream on a chooser hit",
     )
+    prev_branch_chooser_tail_throttle_min_score = Param.Int(
+        0,
+        "Minimum tail-safety score required before adaptive stream limiting. "
+        "The score increases when limiting would not have hidden the next "
+        "same-load-PC delta, and decreases when the next delta was only in "
+        "the dropped CMC tail.",
+    )
     prev_branch_chooser_utility_max_score = Param.Int(
         31,
         "Saturation magnitude for per-candidate chooser utility scores",
