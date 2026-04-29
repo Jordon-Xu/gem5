@@ -828,6 +828,11 @@ class CMCPrefetcher(QueuedPrefetcher):
         "When the prev-branch chooser predicts a head delta, limit the issued "
         "prefetches instead of issuing the full baseline CMC stream",
     )
+    prev_branch_chooser_adaptive_limit = Param.Bool(
+        False,
+        "Limit the baseline CMC stream only for chooser entries whose online "
+        "utility score reaches the throttle threshold",
+    )
     prev_branch_chooser_only_predicted = Param.Bool(
         False,
         "When limiting on chooser hit, issue only the predicted head delta "
@@ -885,6 +890,21 @@ class CMCPrefetcher(QueuedPrefetcher):
     prev_branch_chooser_utility_max_score = Param.Int(
         31,
         "Saturation magnitude for per-candidate chooser utility scores",
+    )
+    prev_branch_access_predictor = Param.Bool(
+        False,
+        "Allow high-utility previous-branch chooser entries to issue one "
+        "predicted head on ordinary data accesses, while leaving baseline CMC "
+        "lookup/training on miss or prefetched-hit events only",
+    )
+    prev_branch_access_min_score = Param.Int(
+        2,
+        "Minimum utility score required for the access-time branch-head "
+        "predictor to issue",
+    )
+    prev_branch_access_cache_filter = Param.Bool(
+        True,
+        "Skip access-time branch-head predictions already in cache or MSHR",
     )
     prev_branch_filter_biased = Param.Bool(
         False,

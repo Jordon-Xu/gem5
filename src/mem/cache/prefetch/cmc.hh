@@ -155,6 +155,7 @@ class CMCPrefetcher : public Queued
         bool hasBaselineHead = false;
         int64_t baselineHeadDeltaBlocks = 0;
         bool hasChooserPrediction = false;
+        bool fromAccessPredictor = false;
         int64_t chooserHeadDeltaBlocks = 0;
         ChooserKey chooserKey;
     };
@@ -217,6 +218,13 @@ class CMCPrefetcher : public Queued
         statistics::Scalar chooserDiffersFromBaseline;
         statistics::Scalar chooserUtilityPositiveUpdates;
         statistics::Scalar chooserUtilityNegativeUpdates;
+        statistics::Scalar accessHeadLookups;
+        statistics::Scalar accessHeadEligible;
+        statistics::Scalar accessHeadIssued;
+        statistics::Scalar accessHeadLowScoreSkips;
+        statistics::Scalar accessHeadCacheSkips;
+        statistics::Scalar accessHeadFeedbacks;
+        statistics::Scalar chooserAdaptiveLimitIssues;
         statistics::Scalar chooserLimitedIssues;
         statistics::Scalar chooserDroppedCandidates;
         statistics::Scalar chooserTrainUpdates;
@@ -246,6 +254,7 @@ class CMCPrefetcher : public Queued
     const unsigned chooserMinConfidence;
     const unsigned chooserMinTopPct;
     const bool chooserLimitOnHit;
+    const bool chooserAdaptiveLimit;
     const bool chooserOnlyPredicted;
     const unsigned chooserBaselineFallbackDegree;
     const bool chooserConstructPredicted;
@@ -258,6 +267,9 @@ class CMCPrefetcher : public Queued
     const int chooserConstructMinScore;
     const int chooserThrottleMinScore;
     const int chooserUtilityMaxScore;
+    const bool prevBranchAccessPredictor;
+    const int prevBranchAccessMinScore;
+    const bool prevBranchAccessCacheFilter;
     const bool filterBiasedPrevBranches;
     const unsigned branchBiasMinSamples;
     const unsigned branchBiasMaxPct;
@@ -302,6 +314,13 @@ class CMCPrefetcher : public Queued
                                            std::vector<AddrPriority> &addresses,
                                            const CacheAccessor &cache,
                                            bool is_secure);
+    bool issueAccessHeadPrediction(Addr block_addr, Addr pc,
+                                   bool prev_branch_valid,
+                                   Addr prev_branch_pc,
+                                   bool prev_branch_taken,
+                                   std::vector<AddrPriority> &addresses,
+                                   const CacheAccessor &cache,
+                                   bool is_secure);
     void evaluatePendingHeadPrediction(Addr pc, int64_t actual_delta_blocks);
     void updateHeadDeltaChooser(Addr pc, Addr prev_branch_pc,
                                 bool prev_branch_taken,
