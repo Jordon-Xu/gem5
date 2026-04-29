@@ -139,6 +139,9 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "thresholds"),
     ADD_STAT(accessHeadIssued, statistics::units::Count::get(),
         "Access-time branch-head predictions issued"),
+    ADD_STAT(accessHeadLookaheadIssued, statistics::units::Count::get(),
+        "Access-time branch-head predictions issued at a farther-ahead "
+        "multiple of the predicted delta after nearer addresses were blocked"),
     ADD_STAT(accessHeadLowScoreSkips, statistics::units::Count::get(),
         "Access-time branch-head predictions skipped by utility score"),
     ADD_STAT(accessHeadCacheSkips, statistics::units::Count::get(),
@@ -254,6 +257,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserMinConfidence(p.prev_branch_chooser_min_confidence),
     chooserMinTopPct(p.prev_branch_chooser_min_top_pct),
     chooserLimitOnHit(p.prev_branch_chooser_limit_on_hit),
+    chooserModifyBaseline(p.prev_branch_chooser_modify_baseline),
     chooserAdaptiveLimit(p.prev_branch_chooser_adaptive_limit),
     chooserOnlyPredicted(p.prev_branch_chooser_only_predicted),
     chooserBaselineFallbackDegree(p.prev_branch_chooser_baseline_fallback_degree),
@@ -270,6 +274,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserUtilityMaxScore(std::max(1, p.prev_branch_chooser_utility_max_score)),
     prevBranchAccessPredictor(p.prev_branch_access_predictor),
     prevBranchAccessMinScore(p.prev_branch_access_min_score),
+    prevBranchAccessLookahead(std::max(1U, p.prev_branch_access_lookahead)),
     prevBranchAccessCacheFilter(p.prev_branch_access_cache_filter),
     filterBiasedPrevBranches(p.prev_branch_filter_biased),
     branchBiasMinSamples(p.prev_branch_bias_min_samples),
@@ -449,6 +454,11 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
             cmcStats.chooserPredictedNotInStream++;
         }
 
+        if (!chooserModifyBaseline) {
+            cmcStats.chooserNoAction++;
+            return result;
+        }
+
         const bool utility_construct_allowed =
             !chooserUseUtilityScore ||
             entry.utilityScores[candidate] >= chooserConstructMinScore;
@@ -624,31 +634,40 @@ CMCPrefetcher::issueAccessHeadPrediction(Addr block_addr, Addr pc,
             continue;
         }
 
-        const int64_t predicted_block =
-            static_cast<int64_t>(block_addr) + entry.deltaBlocks[candidate];
-        if (predicted_block < 0) {
-            continue;
+        for (unsigned distance = 1; distance <= prevBranchAccessLookahead;
+             ++distance) {
+            const int64_t predicted_block =
+                static_cast<int64_t>(block_addr) +
+                entry.deltaBlocks[candidate] * static_cast<int64_t>(distance);
+            if (predicted_block < 0) {
+                break;
+            }
+
+            const Addr predicted_addr =
+                static_cast<Addr>(predicted_block) << lBlkSize;
+            if (prevBranchAccessCacheFilter &&
+                (cache.inCache(predicted_addr, is_secure) ||
+                 cache.inMissQueue(predicted_addr, is_secure))) {
+                cmcStats.accessHeadCacheSkips++;
+                continue;
+            }
+
+            addresses.push_back(AddrPriority(predicted_addr, 0));
+            cmcStats.accessHeadIssued++;
+            if (distance > 1) {
+                cmcStats.accessHeadLookaheadIssued++;
+            }
+
+            if (distance == 1) {
+                PendingHeadPrediction pending;
+                pending.hasChooserPrediction = true;
+                pending.fromAccessPredictor = true;
+                pending.chooserHeadDeltaBlocks = entry.deltaBlocks[candidate];
+                pending.chooserKey = chooser_key;
+                pendingHeadPredictions[pc] = pending;
+            }
+            return true;
         }
-
-        const Addr predicted_addr =
-            static_cast<Addr>(predicted_block) << lBlkSize;
-        if (prevBranchAccessCacheFilter &&
-            (cache.inCache(predicted_addr, is_secure) ||
-             cache.inMissQueue(predicted_addr, is_secure))) {
-            cmcStats.accessHeadCacheSkips++;
-            continue;
-        }
-
-        addresses.push_back(AddrPriority(predicted_addr, 0));
-        cmcStats.accessHeadIssued++;
-
-        PendingHeadPrediction pending;
-        pending.hasChooserPrediction = true;
-        pending.fromAccessPredictor = true;
-        pending.chooserHeadDeltaBlocks = entry.deltaBlocks[candidate];
-        pending.chooserKey = chooser_key;
-        pendingHeadPredictions[pc] = pending;
-        return true;
     }
 
     return false;

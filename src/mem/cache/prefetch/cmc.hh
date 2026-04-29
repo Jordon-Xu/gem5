@@ -221,6 +221,7 @@ class CMCPrefetcher : public Queued
         statistics::Scalar accessHeadLookups;
         statistics::Scalar accessHeadEligible;
         statistics::Scalar accessHeadIssued;
+        statistics::Scalar accessHeadLookaheadIssued;
         statistics::Scalar accessHeadLowScoreSkips;
         statistics::Scalar accessHeadCacheSkips;
         statistics::Scalar accessHeadFeedbacks;
@@ -254,6 +255,7 @@ class CMCPrefetcher : public Queued
     const unsigned chooserMinConfidence;
     const unsigned chooserMinTopPct;
     const bool chooserLimitOnHit;
+    const bool chooserModifyBaseline;
     const bool chooserAdaptiveLimit;
     const bool chooserOnlyPredicted;
     const unsigned chooserBaselineFallbackDegree;
@@ -269,6 +271,7 @@ class CMCPrefetcher : public Queued
     const int chooserUtilityMaxScore;
     const bool prevBranchAccessPredictor;
     const int prevBranchAccessMinScore;
+    const unsigned prevBranchAccessLookahead;
     const bool prevBranchAccessCacheFilter;
     const bool filterBiasedPrevBranches;
     const unsigned branchBiasMinSamples;
