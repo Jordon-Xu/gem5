@@ -848,6 +848,12 @@ class CMCPrefetcher(QueuedPrefetcher):
         "use them to gate stream limiting. This preserves old aggressive "
         "limit-on-hit behavior for compatibility experiments.",
     )
+    prev_branch_chooser_adaptive_blacklist = Param.Bool(
+        False,
+        "Use adaptive tail-safety as a negative blacklist: keep the aggressive "
+        "limit-on-hit policy by default, but disable stream limiting for "
+        "chooser entries whose tail-safety score falls below the threshold.",
+    )
     prev_branch_chooser_only_predicted = Param.Bool(
         False,
         "When limiting on chooser hit, issue only the predicted head delta "

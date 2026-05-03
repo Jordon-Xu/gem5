@@ -298,6 +298,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserAdaptiveLimit(p.prev_branch_chooser_adaptive_limit),
     chooserAdaptiveObservationOnly(
         p.prev_branch_chooser_adaptive_observation_only),
+    chooserAdaptiveBlacklist(p.prev_branch_chooser_adaptive_blacklist),
     chooserOnlyPredicted(p.prev_branch_chooser_only_predicted),
     chooserBaselineFallbackDegree(p.prev_branch_chooser_baseline_fallback_degree),
     chooserConstructPredicted(p.prev_branch_chooser_construct_predicted),
@@ -510,12 +511,17 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
             entry.limitScores[candidate] >= chooserTailThrottleMinScore;
         const bool use_adaptive_decision =
             chooserAdaptiveLimit && !chooserAdaptiveObservationOnly;
+        const bool blacklist_allows_limit =
+            !chooserAdaptiveBlacklist || tail_limit_allowed;
         const bool adaptive_limit_active =
-            use_adaptive_decision && utility_limit_allowed &&
+            use_adaptive_decision && !chooserAdaptiveBlacklist &&
+            utility_limit_allowed &&
             tail_limit_allowed;
         const bool hard_limit_active =
             chooserLimitOnHit &&
-            (!chooserAdaptiveLimit || chooserAdaptiveObservationOnly) &&
+            ((!chooserAdaptiveLimit || chooserAdaptiveObservationOnly) ||
+             (use_adaptive_decision && chooserAdaptiveBlacklist)) &&
+            blacklist_allows_limit &&
             utility_limit_allowed;
         const bool limit_this_hint =
             hard_limit_active || adaptive_limit_active;
