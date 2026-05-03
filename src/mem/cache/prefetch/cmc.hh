@@ -291,6 +291,7 @@ class CMCPrefetcher : public Queued
     const bool chooserLimitOnHit;
     const bool chooserModifyBaseline;
     const bool chooserAdaptiveLimit;
+    const bool chooserAdaptiveObservationOnly;
     const bool chooserOnlyPredicted;
     const unsigned chooserBaselineFallbackDegree;
     const bool chooserConstructPredicted;

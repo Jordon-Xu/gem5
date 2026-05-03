@@ -296,6 +296,8 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserLimitOnHit(p.prev_branch_chooser_limit_on_hit),
     chooserModifyBaseline(p.prev_branch_chooser_modify_baseline),
     chooserAdaptiveLimit(p.prev_branch_chooser_adaptive_limit),
+    chooserAdaptiveObservationOnly(
+        p.prev_branch_chooser_adaptive_observation_only),
     chooserOnlyPredicted(p.prev_branch_chooser_only_predicted),
     chooserBaselineFallbackDegree(p.prev_branch_chooser_baseline_fallback_degree),
     chooserConstructPredicted(p.prev_branch_chooser_construct_predicted),
@@ -506,17 +508,23 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
         const bool tail_limit_allowed =
             !chooserAdaptiveLimit ||
             entry.limitScores[candidate] >= chooserTailThrottleMinScore;
+        const bool use_adaptive_decision =
+            chooserAdaptiveLimit && !chooserAdaptiveObservationOnly;
         const bool adaptive_limit_active =
-            chooserAdaptiveLimit && utility_limit_allowed &&
+            use_adaptive_decision && utility_limit_allowed &&
             tail_limit_allowed;
+        const bool hard_limit_active =
+            chooserLimitOnHit &&
+            (!chooserAdaptiveLimit || chooserAdaptiveObservationOnly) &&
+            utility_limit_allowed;
         const bool limit_this_hint =
-            (chooserLimitOnHit && utility_limit_allowed) ||
-            adaptive_limit_active;
+            hard_limit_active || adaptive_limit_active;
 
         const bool can_construct =
             chooserConstructPredicted &&
-            (limit_this_hint ||
-             (chooserSelectiveConstruct && utility_construct_allowed));
+            (limit_this_hint || chooserSelectiveConstruct ||
+             (chooserAdaptiveLimit && chooserUseUtilityScore &&
+              utility_construct_allowed));
         if (!predicted_found && chooserConstructPredicted &&
             (chooserLimitOnHit || chooserAdaptiveLimit ||
              chooserSelectiveConstruct) &&
@@ -821,9 +829,9 @@ CMCPrefetcher::evaluatePendingHeadPrediction(Addr pc,
 
             if (only_in_dropped_tail && !kept_by_limit) {
                 entry.limitScores[i] = std::max(
-                    -chooserUtilityMaxScore, entry.limitScores[i] - 4);
+                    -chooserUtilityMaxScore, entry.limitScores[i] - 8);
                 cmcStats.chooserLimitNegativeUpdates++;
-            } else {
+            } else if (kept_by_limit) {
                 entry.limitScores[i] = std::min(
                     chooserUtilityMaxScore, entry.limitScores[i] + 1);
                 cmcStats.chooserLimitPositiveUpdates++;

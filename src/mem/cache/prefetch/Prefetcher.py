@@ -837,7 +837,16 @@ class CMCPrefetcher(QueuedPrefetcher):
     prev_branch_chooser_adaptive_limit = Param.Bool(
         False,
         "Limit the baseline CMC stream only for chooser entries whose online "
-        "utility score reaches the throttle threshold",
+        "utility score reaches the throttle threshold and whose tail-safety "
+        "score shows that dropping the CMC tail is unlikely to hide useful "
+        "prefetches. When enabled, this tail-safety gate takes precedence over "
+        "the global limit-on-hit knob.",
+    )
+    prev_branch_chooser_adaptive_observation_only = Param.Bool(
+        False,
+        "Update adaptive chooser utility and tail-safety scores, but do not "
+        "use them to gate stream limiting. This preserves old aggressive "
+        "limit-on-hit behavior for compatibility experiments.",
     )
     prev_branch_chooser_only_predicted = Param.Bool(
         False,
@@ -857,7 +866,9 @@ class CMCPrefetcher(QueuedPrefetcher):
     prev_branch_chooser_selective_construct = Param.Bool(
         False,
         "When not limiting on chooser hit, construct a missing predicted head "
-        "address and issue it before the unchanged baseline CMC stream",
+        "address and issue it before the unchanged baseline CMC stream. With "
+        "adaptive limiting and utility-score gating enabled, high-utility "
+        "chooser entries can also construct without throttling the tail.",
     )
     prev_branch_chooser_construct_min_samples = Param.Unsigned(
         0,
