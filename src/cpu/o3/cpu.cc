@@ -76,6 +76,7 @@ CPU::CPU(const BaseO3CPUParams &params)
       recentBranchOutcomes(numThreads),
       branchOutcomeStats(numThreads),
       branchContextMode(params.branch_context_mode),
+      branchContextOrder(params.branch_context_order),
       tickEvent([this] { tick(); }, "O3CPU tick", false, Event::CPU_Tick_Pri),
       threadExitEvent([this] { exitThreads(); }, "O3CPU exit threads", false,
                       Event::CPU_Exit_Pri),
@@ -120,7 +121,10 @@ CPU::CPU(const BaseO3CPUParams &params)
 {
     fatal_if(branchContextMode != "conditional" && branchContextMode != "backward",
              "Unsupported branch_context_mode '%s'; expected 'conditional' "
-             "or 'backward'\n", branchContextMode);
+             "or 'backward'\n", branchContextMode.c_str());
+    fatal_if(branchContextOrder != "program" && branchContextOrder != "execution",
+             "Unsupported branch_context_order '%s'; expected 'program' "
+             "or 'execution'\n", branchContextOrder.c_str());
 
     fatal_if(FullSystem && params.numThreads > 1,
              "SMT is not supported in O3 in full system mode currently.");

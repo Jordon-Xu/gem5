@@ -140,6 +140,7 @@ class CPU : public BaseCPU
     std::vector<std::unordered_map<Addr, BranchOutcomeStats>>
         branchOutcomeStats;
     const std::string branchContextMode;
+    const std::string branchContextOrder;
 
     bool
     recordsConditionalBranchContext() const
@@ -151,6 +152,18 @@ class CPU : public BaseCPU
     recordsBackwardBranchContext() const
     {
         return branchContextMode == "backward";
+    }
+
+    bool
+    usesProgramOrderBranchContext() const
+    {
+        return branchContextOrder == "program";
+    }
+
+    bool
+    usesExecutionOrderBranchContext() const
+    {
+        return branchContextOrder == "execution";
     }
 
   private:
@@ -253,17 +266,38 @@ class CPU : public BaseCPU
                               bool skip_biased = false) const
     {
         const auto &history = recentBranchOutcomes[tid];
-        for (auto it = history.rbegin(); it != history.rend(); ++it) {
-            if (it->seqNum < seq_num) {
-                if (skip_biased && isBranchOutcomeBiased(tid, it->pc)) {
+        if (usesExecutionOrderBranchContext()) {
+            for (auto it = history.rbegin(); it != history.rend(); ++it) {
+                if (it->seqNum < seq_num) {
+                    if (skip_biased && isBranchOutcomeBiased(tid, it->pc)) {
+                        continue;
+                    }
+                    pc = it->pc;
+                    taken = it->taken;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        const BranchOutcomeRecord *best = nullptr;
+        for (const auto &record : history) {
+            if (record.seqNum < seq_num) {
+                if (skip_biased && isBranchOutcomeBiased(tid, record.pc)) {
                     continue;
                 }
-                pc = it->pc;
-                taken = it->taken;
-                return true;
+                if (!best || record.seqNum > best->seqNum) {
+                    best = &record;
+                }
             }
         }
-        return false;
+        if (!best) {
+            return false;
+        }
+
+        pc = best->pc;
+        taken = best->taken;
+        return true;
     }
 
     void
