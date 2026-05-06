@@ -50,6 +50,7 @@
 #include <list>
 #include <queue>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -138,6 +139,19 @@ class CPU : public BaseCPU
     std::vector<std::deque<BranchOutcomeRecord>> recentBranchOutcomes;
     std::vector<std::unordered_map<Addr, BranchOutcomeStats>>
         branchOutcomeStats;
+    const std::string branchContextMode;
+
+    bool
+    recordsConditionalBranchContext() const
+    {
+        return branchContextMode == "conditional";
+    }
+
+    bool
+    recordsBackwardBranchContext() const
+    {
+        return branchContextMode == "backward";
+    }
 
   private:
 

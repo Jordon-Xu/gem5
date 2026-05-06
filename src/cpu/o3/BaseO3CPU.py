@@ -205,6 +205,11 @@ class BaseO3CPU(BaseCPU):
         ),
         "Branch Predictor",
     )
+    branch_context_mode = Param.String(
+        "conditional",
+        "Branch type recorded as the previous branch context for memory "
+        "requests: conditional or backward",
+    )
     needsTSO = Param.Bool(False, "Enable TSO Memory model")
 
     recvRespThrottling = Param.Bool(

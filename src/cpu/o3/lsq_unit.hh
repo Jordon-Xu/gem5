@@ -542,7 +542,7 @@ class LSQUnit
     /** Flag for memory model. */
     bool needsTSO;
 
-    /** Previous same-load-PC branch states for this thread. */
+    /** Previous same-load-PC branch-context states for this thread. */
     std::unordered_map<Addr, LoadBranchState> previousLoadBranchStates;
     /** Dynamic update log to rollback wrong-path load-state updates. */
     std::vector<LoadBranchStateLogEntry> loadBranchStateLog;

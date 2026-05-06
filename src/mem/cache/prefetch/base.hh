@@ -134,9 +134,9 @@ class Base : public ClockedObject
         bool prefetched;
         /** Pointer to the associated request data */
         uint8_t *data;
-        /** Whether a previous same-load-PC branch state was attached. */
+        /** Whether a previous same-load-PC branch-context state was attached. */
         bool validPrevLoadBranchOutcome;
-        /** The previous same-load-PC branch PC. */
+        /** The previous same-load-PC branch-context PC. */
         Addr prevLoadBranchPC;
         /** The previous same-load-PC branch taken/not-taken bit. */
         bool prevLoadBranchTaken;

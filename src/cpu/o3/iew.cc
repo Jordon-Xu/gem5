@@ -1578,10 +1578,20 @@ IEW::updateExeInstStats(const DynInstPtr& inst)
     //
     if (inst->isControl()) {
         cpu->executeStats[tid]->numBranches++;
-        if (inst->isCondCtrl()) {
+        const Addr branch_pc = inst->pcState().instAddr();
+        bool record_branch = false;
+
+        if (cpu->recordsConditionalBranchContext()) {
+            record_branch = inst->isCondCtrl();
+        } else if (cpu->recordsBackwardBranchContext() &&
+                   inst->isCondCtrl() && inst->isDirectCtrl()) {
+            const auto target = inst->branchTarget();
+            record_branch = target->instAddr() < branch_pc;
+        }
+
+        if (record_branch) {
             const bool taken = inst->pcState().branching();
-            cpu->recordBranchOutcome(tid, inst->seqNum,
-                                     inst->pcState().instAddr(), taken);
+            cpu->recordBranchOutcome(tid, inst->seqNum, branch_pc, taken);
         }
     }
 
