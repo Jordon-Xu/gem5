@@ -94,6 +94,15 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(chooserSelectiveConstructedHeads, statistics::units::Count::get(),
         "Chooser hits where a missing predicted head was constructed without "
         "throttling the baseline stream"),
+    ADD_STAT(chooserConstructedActiveCmcDelta, statistics::units::Count::get(),
+        "Constructed chooser heads whose delta exists in another active CMC "
+        "stream for the same load PC"),
+    ADD_STAT(chooserConstructedEvictedCmcDelta, statistics::units::Count::get(),
+        "Constructed chooser heads whose delta was previously present in a "
+        "CMC stream for the same load PC but later evicted or overwritten"),
+    ADD_STAT(chooserConstructedNeverCmcDelta, statistics::units::Count::get(),
+        "Constructed chooser heads whose delta has not been seen in any CMC "
+        "stream for the same load PC"),
     ADD_STAT(chooserConstructThresholdSkips, statistics::units::Count::get(),
         "Chooser predictions not constructed because construct-only "
         "confidence thresholds rejected them"),
@@ -151,6 +160,15 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(accessHeadLookaheadIssued, statistics::units::Count::get(),
         "Access-time branch-head predictions issued at a farther-ahead "
         "multiple of the predicted delta after nearer addresses were blocked"),
+    ADD_STAT(accessHeadActiveCmcDelta, statistics::units::Count::get(),
+        "Access-time heads whose delta exists in another active CMC stream "
+        "for the same load PC"),
+    ADD_STAT(accessHeadEvictedCmcDelta, statistics::units::Count::get(),
+        "Access-time heads whose delta was previously present in a CMC stream "
+        "for the same load PC but later evicted or overwritten"),
+    ADD_STAT(accessHeadNeverCmcDelta, statistics::units::Count::get(),
+        "Access-time heads whose delta has not been seen in any CMC stream "
+        "for the same load PC"),
     ADD_STAT(accessHeadLowScoreSkips, statistics::units::Count::get(),
         "Access-time branch-head predictions skipped by utility score"),
     ADD_STAT(accessHeadCacheSkips, statistics::units::Count::get(),
@@ -193,6 +211,14 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(sourceUsefulAccessHead, statistics::units::Count::get(),
         "Useful tracked prefetches from the access-time branch-head "
         "predictor"),
+    ADD_STAT(cmcStorageUpdates, statistics::units::Count::get(),
+        "Completed trainings that update an existing CMC storage entry"),
+    ADD_STAT(cmcStorageInsertions, statistics::units::Count::get(),
+        "Completed trainings that insert into a CMC storage entry"),
+    ADD_STAT(cmcStorageVictimReplacements, statistics::units::Count::get(),
+        "CMC insertions that replace a valid victim entry"),
+    ADD_STAT(cmcStorageVictimInvalid, statistics::units::Count::get(),
+        "CMC insertions that use an invalid victim entry"),
     ADD_STAT(chooserTrainUpdates, statistics::units::Count::get(),
         "Training completions that update the prev-branch head-delta chooser"),
     ADD_STAT(prevBranchFeatureValidRate, statistics::units::Ratio::get(),
@@ -290,6 +316,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserTopK(std::min<unsigned>(
         p.prev_branch_chooser_topk, HeadDeltaChooserEntry::MaxCandidates)),
     chooserUseTaken(p.prev_branch_chooser_use_taken),
+    chooserUseBranchPc(p.prev_branch_chooser_use_branch_pc),
     chooserMinSamples(p.prev_branch_chooser_min_samples),
     chooserMinConfidence(p.prev_branch_chooser_min_confidence),
     chooserMinTopPct(p.prev_branch_chooser_min_top_pct),
@@ -346,9 +373,78 @@ CMCPrefetcher::makeChooserKey(Addr load_pc, Addr prev_branch_pc,
 {
     return ChooserKey{
         load_pc,
-        prev_branch_pc,
+        chooserUseBranchPc ? prev_branch_pc : 0,
         chooserUseTaken ? prev_branch_taken : false
     };
+}
+
+void
+CMCPrefetcher::removeActiveCmcDeltas(const StorageEntry &entry)
+{
+    if (!entry.isValid() || entry.addresses.empty()) {
+        return;
+    }
+
+    auto active_it = activeCmcDeltasByPc.find(entry.triggerPc);
+    if (active_it == activeCmcDeltasByPc.end()) {
+        return;
+    }
+
+    for (Addr addr : entry.addresses) {
+        const int64_t delta_blocks =
+            static_cast<int64_t>(blockIndex(addr)) -
+            static_cast<int64_t>(entry.triggerAddr);
+        evictedCmcDeltasByPc[entry.triggerPc].insert(delta_blocks);
+
+        auto delta_it = active_it->second.find(delta_blocks);
+        if (delta_it == active_it->second.end()) {
+            continue;
+        }
+        if (delta_it->second <= 1) {
+            active_it->second.erase(delta_it);
+        } else {
+            delta_it->second--;
+        }
+    }
+
+    if (active_it->second.empty()) {
+        activeCmcDeltasByPc.erase(active_it);
+    }
+}
+
+void
+CMCPrefetcher::installActiveCmcDeltas(StorageEntry &entry, Addr pc,
+                                      Addr trigger_addr,
+                                      const std::vector<Addr> &addresses)
+{
+    entry.triggerPc = pc;
+    entry.triggerAddr = trigger_addr;
+
+    auto &active = activeCmcDeltasByPc[pc];
+    for (Addr addr : addresses) {
+        const int64_t delta_blocks =
+            static_cast<int64_t>(blockIndex(addr)) -
+            static_cast<int64_t>(trigger_addr);
+        active[delta_blocks]++;
+    }
+}
+
+CMCPrefetcher::CmcDeltaStatus
+CMCPrefetcher::classifyCmcDelta(Addr pc, int64_t delta_blocks) const
+{
+    const auto active_it = activeCmcDeltasByPc.find(pc);
+    if (active_it != activeCmcDeltasByPc.end() &&
+        active_it->second.find(delta_blocks) != active_it->second.end()) {
+        return CmcDeltaStatus::Active;
+    }
+
+    const auto evicted_it = evictedCmcDeltasByPc.find(pc);
+    if (evicted_it != evictedCmcDeltasByPc.end() &&
+        evicted_it->second.find(delta_blocks) != evicted_it->second.end()) {
+        return CmcDeltaStatus::Evicted;
+    }
+
+    return CmcDeltaStatus::NeverSeen;
 }
 
 bool
@@ -613,6 +709,17 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
                 cmcStats.chooserAdaptiveLimitIssues++;
             }
             if (predicted_constructed) {
+                switch (classifyCmcDelta(pc, predicted_delta)) {
+                  case CmcDeltaStatus::Active:
+                    cmcStats.chooserConstructedActiveCmcDelta++;
+                    break;
+                  case CmcDeltaStatus::Evicted:
+                    cmcStats.chooserConstructedEvictedCmcDelta++;
+                    break;
+                  case CmcDeltaStatus::NeverSeen:
+                    cmcStats.chooserConstructedNeverCmcDelta++;
+                    break;
+                }
                 cmcStats.chooserConstructedHeads++;
             }
             if (predicted_found && predicted_idx != 0) {
@@ -625,6 +732,17 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
             return result;
         } else if (predicted_constructed) {
             addresses.insert(addresses.begin(), predicted_addr);
+            switch (classifyCmcDelta(pc, predicted_delta)) {
+              case CmcDeltaStatus::Active:
+                cmcStats.chooserConstructedActiveCmcDelta++;
+                break;
+              case CmcDeltaStatus::Evicted:
+                cmcStats.chooserConstructedEvictedCmcDelta++;
+                break;
+              case CmcDeltaStatus::NeverSeen:
+                cmcStats.chooserConstructedNeverCmcDelta++;
+                break;
+            }
             cmcStats.chooserConstructedHeads++;
             cmcStats.chooserSelectiveConstructedHeads++;
             result.changed = true;
@@ -712,6 +830,19 @@ CMCPrefetcher::issueAccessHeadPrediction(Addr block_addr, Addr pc,
                 continue;
             }
 
+            const int64_t issued_delta_blocks =
+                entry.deltaBlocks[candidate] * static_cast<int64_t>(distance);
+            switch (classifyCmcDelta(pc, issued_delta_blocks)) {
+              case CmcDeltaStatus::Active:
+                cmcStats.accessHeadActiveCmcDelta++;
+                break;
+              case CmcDeltaStatus::Evicted:
+                cmcStats.accessHeadEvictedCmcDelta++;
+                break;
+              case CmcDeltaStatus::NeverSeen:
+                cmcStats.accessHeadNeverCmcDelta++;
+                break;
+            }
             addresses.push_back(AddrPriority(predicted_addr, 0));
             TrackedPrefetchSource source;
             source.source = CandidateSource::AccessHead;
@@ -1251,15 +1382,30 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 
             StorageEntry *entry = baseline_train_entry;
             if (entry) {
+                cmcStats.cmcStorageUpdates++;
                 cmcStats.augmentedTrainHits++;
                 // storage.accessEntry(entry); do not update replacement
                 DPRINTF(HWPrefetch, "CMC: enter the same trigger, pc: %lx, addr: %lx\n",
                                     trigger_head.pc, trigger_head.addr);
+                removeActiveCmcDeltas(*entry);
                 entry->addresses = recorder->entries;
+                installActiveCmcDeltas(
+                    *entry, trigger_head.pc, trigger_head.addr,
+                    recorder->entries);
 
             } else {
                 entry = storage.findVictim(baseline_train_key);
+                cmcStats.cmcStorageInsertions++;
+                if (entry->isValid()) {
+                    cmcStats.cmcStorageVictimReplacements++;
+                    removeActiveCmcDeltas(*entry);
+                } else {
+                    cmcStats.cmcStorageVictimInvalid++;
+                }
                 entry->addresses = recorder->entries;
+                installActiveCmcDeltas(
+                    *entry, trigger_head.pc, trigger_head.addr,
+                    recorder->entries);
 
                 storage.insertEntry(
                     baseline_train_key,
@@ -1371,6 +1517,8 @@ CMCPrefetcher::StorageEntry::invalidate()
 {
     TaggedEntry::invalidate();
     addresses.clear();
+    triggerPc = 0;
+    triggerAddr = 0;
 }
 
 

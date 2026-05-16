@@ -809,6 +809,11 @@ class CMCPrefetcher(QueuedPrefetcher):
         False,
         "Include the previous branch taken bit in the prev-branch chooser key",
     )
+    prev_branch_chooser_use_branch_pc = Param.Bool(
+        True,
+        "Include the previous branch PC in the prev-branch chooser key. "
+        "Disable to test a load-PC-only head-delta predictor",
+    )
     prev_branch_chooser_min_samples = Param.Unsigned(
         8,
         "Minimum samples before a prev-branch chooser entry can issue hints",

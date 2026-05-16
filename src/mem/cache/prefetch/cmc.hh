@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "base/types.hh"
 #include "mem/cache/prefetch/associative_set.hh"
@@ -98,6 +99,8 @@ class CMCPrefetcher : public Queued
         std::vector<Addr> addresses;
         int refcnt = 0;
         uint64_t id = 0;
+        Addr triggerPc = 0;
+        Addr triggerAddr = 0;
     };
 
 
@@ -224,6 +227,9 @@ class CMCPrefetcher : public Queued
         statistics::Scalar chooserSecondChoicePromotions;
         statistics::Scalar chooserConstructedHeads;
         statistics::Scalar chooserSelectiveConstructedHeads;
+        statistics::Scalar chooserConstructedActiveCmcDelta;
+        statistics::Scalar chooserConstructedEvictedCmcDelta;
+        statistics::Scalar chooserConstructedNeverCmcDelta;
         statistics::Scalar chooserConstructThresholdSkips;
         statistics::Scalar chooserConstructCacheSkips;
         statistics::Scalar chooserUtilityConstructSkips;
@@ -245,6 +251,9 @@ class CMCPrefetcher : public Queued
         statistics::Scalar accessHeadEligible;
         statistics::Scalar accessHeadIssued;
         statistics::Scalar accessHeadLookaheadIssued;
+        statistics::Scalar accessHeadActiveCmcDelta;
+        statistics::Scalar accessHeadEvictedCmcDelta;
+        statistics::Scalar accessHeadNeverCmcDelta;
         statistics::Scalar accessHeadLowScoreSkips;
         statistics::Scalar accessHeadCacheSkips;
         statistics::Scalar accessHeadFeedbacks;
@@ -262,6 +271,10 @@ class CMCPrefetcher : public Queued
         statistics::Scalar sourceUsefulBaselineTail;
         statistics::Scalar sourceUsefulChooserHead;
         statistics::Scalar sourceUsefulAccessHead;
+        statistics::Scalar cmcStorageUpdates;
+        statistics::Scalar cmcStorageInsertions;
+        statistics::Scalar cmcStorageVictimReplacements;
+        statistics::Scalar cmcStorageVictimInvalid;
         statistics::Scalar chooserTrainUpdates;
 
         statistics::Formula prevBranchFeatureValidRate;
@@ -285,6 +298,7 @@ class CMCPrefetcher : public Queued
     const bool useLastBranchTaken;
     const unsigned chooserTopK;
     const bool chooserUseTaken;
+    const bool chooserUseBranchPc;
     const unsigned chooserMinSamples;
     const unsigned chooserMinConfidence;
     const unsigned chooserMinTopPct;
@@ -320,6 +334,10 @@ class CMCPrefetcher : public Queued
     std::unordered_map<Addr, Addr> lastObservedBlockByPc;
     std::unordered_map<Addr, PendingHeadPrediction> pendingHeadPredictions;
     std::unordered_map<Addr, PrevBranchPcStats> prevBranchPcStats;
+    std::unordered_map<Addr, std::unordered_map<int64_t, unsigned>>
+        activeCmcDeltasByPc;
+    std::unordered_map<Addr, std::unordered_set<int64_t>>
+        evictedCmcDeltasByPc;
     std::unordered_map<ChooserKey, HeadDeltaChooserEntry, ChooserKeyHash>
         headDeltaChooser;
     std::unordered_map<Addr, TrackedPrefetchSource> trackedPrefetchSources;
@@ -341,6 +359,16 @@ class CMCPrefetcher : public Queued
     std::deque<RecordEntry> trigger;
     ChooserKey makeChooserKey(Addr load_pc, Addr prev_branch_pc,
                               bool prev_branch_taken) const;
+    void removeActiveCmcDeltas(const StorageEntry &entry);
+    void installActiveCmcDeltas(StorageEntry &entry, Addr pc, Addr trigger_addr,
+                                const std::vector<Addr> &addresses);
+    enum class CmcDeltaStatus : uint8_t
+    {
+        Active,
+        Evicted,
+        NeverSeen
+    };
+    CmcDeltaStatus classifyCmcDelta(Addr pc, int64_t delta_blocks) const;
     bool isPrevBranchPcBiased(const PrevBranchPcStats &stats) const;
     bool updatePrevBranchPcStats(Addr prev_branch_pc, bool taken);
     void dumpPrevBranchSample(Addr pc, Addr block_addr, bool has_prev_pc,
