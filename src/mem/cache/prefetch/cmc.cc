@@ -221,6 +221,17 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "CMC insertions that use an invalid victim entry"),
     ADD_STAT(chooserTrainUpdates, statistics::units::Count::get(),
         "Training completions that update the prev-branch head-delta chooser"),
+    ADD_STAT(remapSegmentsTrained, statistics::units::Count::get(),
+        "CMC remap stream segments written during training"),
+    ADD_STAT(remapContinuationSegments, statistics::units::Count::get(),
+        "CMC remap segments whose lookup key is a previously recorded stream "
+        "address"),
+    ADD_STAT(remapBranchKeyedSegments, statistics::units::Count::get(),
+        "CMC remap segments written with previous-branch context in the "
+        "storage key"),
+    ADD_STAT(remapBranchSplitStops, statistics::units::Count::get(),
+        "CMC remap segments ended early because the recorded previous-branch "
+        "context changed"),
     ADD_STAT(prevBranchFeatureValidRate, statistics::units::Ratio::get(),
         "Fraction of lookups with a valid previous same-load-PC branch "
         "feature"),
@@ -312,6 +323,7 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     recorder(new Recorder(p.degree)),
     storage(p.storage_assoc, p.storage_entries, p.storage_indexing_policy,
             p.storage_replacement_policy, StorageEntry()),
+    issueCmcStream(p.issue_cmc_stream),
     useLastBranchTaken(p.use_last_branch_taken),
     chooserTopK(std::min<unsigned>(
         p.prev_branch_chooser_topk, HeadDeltaChooserEntry::MaxCandidates)),
@@ -347,6 +359,11 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     filterBiasedPrevBranches(p.prev_branch_filter_biased),
     branchBiasMinSamples(p.prev_branch_bias_min_samples),
     branchBiasMaxPct(std::min<unsigned>(p.prev_branch_bias_max_pct, 100)),
+    remapStreams(p.remap_streams),
+    remapSegmentDegree(std::max(1U, p.remap_segment_degree)),
+    remapUseBranchContext(p.remap_use_branch_context),
+    remapUseTaken(p.remap_use_taken),
+    remapSplitOnBranchChange(p.remap_split_on_branch_change),
     prevBranchDumpFile(p.prev_branch_dump_file),
     prevBranchDumpLimit(p.prev_branch_dump_limit),
     trigger()
@@ -376,6 +393,145 @@ CMCPrefetcher::makeChooserKey(Addr load_pc, Addr prev_branch_pc,
         chooserUseBranchPc ? prev_branch_pc : 0,
         chooserUseTaken ? prev_branch_taken : false
     };
+}
+
+uint64_t
+CMCPrefetcher::makeStorageKey(Addr addr, Addr pc, bool prev_branch_valid,
+                              Addr prev_branch_pc,
+                              bool prev_branch_taken) const
+{
+    uint64_t key = hash(addr, pc);
+    if (remapStreams && remapUseBranchContext && prev_branch_valid) {
+        key ^= static_cast<uint64_t>(prev_branch_pc) << 17;
+        key ^= static_cast<uint64_t>(prev_branch_pc) >> 3;
+        if (remapUseTaken && prev_branch_taken) {
+            key ^= 0x9e3779b97f4a7c15ULL;
+        }
+    }
+    return key;
+}
+
+bool
+CMCPrefetcher::remapBranchContextDiffers(
+    const Recorder::Access &previous, const Recorder::Access &current) const
+{
+    if (!remapSplitOnBranchChange || !remapUseBranchContext) {
+        return false;
+    }
+
+    if (previous.use_prev_branch_for_chooser !=
+        current.use_prev_branch_for_chooser) {
+        return true;
+    }
+
+    if (!previous.use_prev_branch_for_chooser) {
+        return false;
+    }
+
+    if (previous.prev_branch_pc != current.prev_branch_pc) {
+        return true;
+    }
+
+    return remapUseTaken &&
+        previous.last_branch_taken != current.last_branch_taken;
+}
+
+CMCPrefetcher::StorageEntry *
+CMCPrefetcher::writeStorageEntry(uint64_t key, Addr pc, Addr trigger_addr,
+                                 bool is_secure,
+                                 const std::vector<Addr> &addresses,
+                                 bool count_train_hit)
+{
+    StorageEntry *entry = storage.findEntry(key, is_secure);
+    if (entry) {
+        cmcStats.cmcStorageUpdates++;
+        if (count_train_hit) {
+            cmcStats.augmentedTrainHits++;
+        }
+        removeActiveCmcDeltas(*entry);
+        entry->addresses = addresses;
+        installActiveCmcDeltas(*entry, pc, trigger_addr, addresses);
+        return entry;
+    }
+
+    entry = storage.findVictim(key);
+    cmcStats.cmcStorageInsertions++;
+    if (entry->isValid()) {
+        cmcStats.cmcStorageVictimReplacements++;
+        removeActiveCmcDeltas(*entry);
+    } else {
+        cmcStats.cmcStorageVictimInvalid++;
+    }
+    entry->addresses = addresses;
+    installActiveCmcDeltas(*entry, pc, trigger_addr, addresses);
+    storage.insertEntry(key, is_secure, entry);
+    return entry;
+}
+
+void
+CMCPrefetcher::trainRemapEntries(const RecordEntry &trigger_head)
+{
+    const auto &entries = recorder->entries;
+    if (entries.empty()) {
+        return;
+    }
+
+    const bool has_access_context = recorder->accesses.size() == entries.size();
+    bool first_segment = true;
+    std::size_t lookup_idx = 0;
+
+    for (std::size_t offset = 0; offset < entries.size();) {
+        std::size_t end = offset + 1;
+        bool split_on_branch = false;
+        while (end < entries.size() &&
+               end - offset < remapSegmentDegree) {
+            if (has_access_context &&
+                remapBranchContextDiffers(recorder->accesses[end - 1],
+                                          recorder->accesses[end])) {
+                split_on_branch = true;
+                break;
+            }
+            end++;
+        }
+
+        std::vector<Addr> segment(entries.begin() + offset,
+                                  entries.begin() + end);
+
+        Addr lookup_pc = trigger_head.pc;
+        Addr lookup_block = trigger_head.addr;
+        bool lookup_secure = trigger_head.is_secure;
+        bool lookup_branch_valid = trigger_head.use_prev_branch_for_chooser;
+        Addr lookup_branch_pc = trigger_head.prev_branch_pc;
+        bool lookup_branch_taken = trigger_head.last_branch_taken;
+
+        if (!first_segment && has_access_context) {
+            const auto &lookup = recorder->accesses[lookup_idx];
+            lookup_pc = lookup.pc;
+            lookup_block = blockIndex(lookup.addr);
+            lookup_secure = lookup.is_secure;
+            lookup_branch_valid = lookup.use_prev_branch_for_chooser;
+            lookup_branch_pc = lookup.prev_branch_pc;
+            lookup_branch_taken = lookup.last_branch_taken;
+            cmcStats.remapContinuationSegments++;
+        }
+
+        const uint64_t key = makeStorageKey(
+            lookup_block, lookup_pc, lookup_branch_valid, lookup_branch_pc,
+            lookup_branch_taken);
+        writeStorageEntry(key, lookup_pc, lookup_block, lookup_secure,
+                          segment, offset == 0);
+        cmcStats.remapSegmentsTrained++;
+        if (remapUseBranchContext && lookup_branch_valid) {
+            cmcStats.remapBranchKeyedSegments++;
+        }
+        if (split_on_branch) {
+            cmcStats.remapBranchSplitStops++;
+        }
+
+        lookup_idx = offset;
+        offset = end;
+        first_segment = false;
+    }
 }
 
 void
@@ -1211,7 +1367,7 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     const bool baseline_event = pfi.isCacheMiss() || pfi.wasPrefetched();
     bool prev_load_branch_biased = false;
     bool prev_load_branch_usable = false;
-    const uint64_t baseline_key = hash(block_addr, pc);
+    uint64_t baseline_key = hash(block_addr, pc);
     bool has_prev_pc = false;
     Addr delta_blocks = 0;
     int64_t actual_delta_blocks = 0;
@@ -1254,6 +1410,9 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             cmcStats.prevBranchFilteredLookups++;
         }
     }
+    baseline_key = makeStorageKey(block_addr, pc, prev_load_branch_usable,
+                                  prev_load_branch_pc,
+                                  prev_load_branch_taken);
 
     StorageEntry *baseline_entry = storage.findEntry(baseline_key, is_secure);
     if (baseline_entry) {
@@ -1282,11 +1441,13 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
                 pc, block_addr);
       //printf("=== Storage hit, trigger addr: %lx\n", block_addr);
 
-        for (auto addr: match_entry->addresses) {
-            addresses.push_back(AddrPriority(addr, 0));
+        if (issueCmcStream) {
+            for (auto addr: match_entry->addresses) {
+                addresses.push_back(AddrPriority(addr, 0));
+            }
         }
         const std::vector<AddrPriority> baseline_stream = addresses;
-        if (prev_load_branch_valid) {
+        if (prev_load_branch_valid && issueCmcStream) {
             cmcStats.prefetchCandidatesFromAugmentedKeys +=
                 match_entry->addresses.size();
         }
@@ -1304,10 +1465,13 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
                     static_cast<int64_t>(block_addr));
             }
         }
-        HeadDeltaHintResult hint = applyHeadDeltaHint(
-            block_addr, pc, prev_load_branch_usable,
-            prev_load_branch_pc, prev_load_branch_taken,
-            addresses, cache_accessor, is_secure);
+        HeadDeltaHintResult hint;
+        if (issueCmcStream || chooserModifyBaseline) {
+            hint = applyHeadDeltaHint(
+                block_addr, pc, prev_load_branch_usable,
+                prev_load_branch_pc, prev_load_branch_taken,
+                addresses, cache_accessor, is_secure);
+        }
         if (hint.hasPrediction) {
             pending.hasChooserPrediction = true;
             pending.chooserHeadDeltaBlocks = hint.predictedDeltaBlocks;
@@ -1351,7 +1515,10 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 
     /* 2. Train entry */
     if (do_training) {
-        bool trained = recorder->train_entry(addr, is_secure, &finished);
+        bool trained = recorder->train_entry(
+            addr, is_secure, &finished, pc, prev_load_branch_valid,
+            prev_load_branch_usable, prev_load_branch_pc,
+            prev_load_branch_taken);
         auto &trigger_head = trigger.front();
         if (trained) {
             //printf("trained %x\n", block_addr);
@@ -1360,8 +1527,11 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
 			//finished gets set once a coalesced set of 16 targets get stored in the training entry.
             //printf("trigger train finished, pc: %lx, addr: %lx\n",
                //     trigger_head.pc, trigger_head.addr);
-            const uint64_t baseline_train_key = hash(
-                trigger_head.addr, trigger_head.pc);
+            const uint64_t baseline_train_key = makeStorageKey(
+                trigger_head.addr, trigger_head.pc,
+                trigger_head.use_prev_branch_for_chooser,
+                trigger_head.prev_branch_pc,
+                trigger_head.last_branch_taken);
 
             cmcStats.trainCompletions++;
             if (trigger_head.has_prev_load_branch) {
@@ -1374,44 +1544,21 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
                 cmcStats.trainAugmentedKeyDiffersFromBaseline++;
             }
 
-            StorageEntry *baseline_train_entry = storage.findEntry(
-                baseline_train_key, trigger_head.is_secure);
-            if (baseline_train_entry) {
+            if (storage.findEntry(baseline_train_key,
+                                  trigger_head.is_secure)) {
                 cmcStats.baselineTrainHits++;
             }
 
-            StorageEntry *entry = baseline_train_entry;
-            if (entry) {
-                cmcStats.cmcStorageUpdates++;
-                cmcStats.augmentedTrainHits++;
-                // storage.accessEntry(entry); do not update replacement
-                DPRINTF(HWPrefetch, "CMC: enter the same trigger, pc: %lx, addr: %lx\n",
-                                    trigger_head.pc, trigger_head.addr);
-                removeActiveCmcDeltas(*entry);
-                entry->addresses = recorder->entries;
-                installActiveCmcDeltas(
-                    *entry, trigger_head.pc, trigger_head.addr,
-                    recorder->entries);
-
+            if (remapStreams) {
+                trainRemapEntries(trigger_head);
             } else {
-                entry = storage.findVictim(baseline_train_key);
-                cmcStats.cmcStorageInsertions++;
-                if (entry->isValid()) {
-                    cmcStats.cmcStorageVictimReplacements++;
-                    removeActiveCmcDeltas(*entry);
-                } else {
-                    cmcStats.cmcStorageVictimInvalid++;
-                }
-                entry->addresses = recorder->entries;
-                installActiveCmcDeltas(
-                    *entry, trigger_head.pc, trigger_head.addr,
-                    recorder->entries);
-
-                storage.insertEntry(
-                    baseline_train_key,
-                    trigger_head.is_secure,
-                    entry
-                );
+                // storage.accessEntry(entry); do not update replacement
+                DPRINTF(HWPrefetch,
+                        "CMC: enter the same trigger, pc: %lx, addr: %lx\n",
+                        trigger_head.pc, trigger_head.addr);
+                writeStorageEntry(
+                    baseline_train_key, trigger_head.pc, trigger_head.addr,
+                    trigger_head.is_secure, recorder->entries, true);
             }
 
             for (auto addr: recorder->entries) {
@@ -1460,10 +1607,24 @@ bool
 CMCPrefetcher::Recorder::train_entry(
     Addr addr,
     bool is_secure,
-    bool *finished
+    bool *finished,
+    Addr pc,
+    bool has_prev_load_branch,
+    bool use_prev_branch_for_chooser,
+    Addr prev_branch_pc,
+    bool last_branch_taken
 ) {
 
         entries.push_back(addr);
+        accesses.push_back({
+            pc,
+            addr,
+            is_secure,
+            has_prev_load_branch,
+            use_prev_branch_for_chooser,
+            prev_branch_pc,
+            last_branch_taken
+        });
         index++;
         //There was an off-by-one error here: it stored 17 entries
 
@@ -1481,6 +1642,7 @@ void
 CMCPrefetcher::Recorder::reset() {
     index = 0;
     entries.clear();
+    accesses.clear();
 }
 
 // void

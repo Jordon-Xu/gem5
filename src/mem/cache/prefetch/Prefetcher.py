@@ -795,6 +795,37 @@ class CMCPrefetcher(QueuedPrefetcher):
     )
     storage_assoc = Param.Int(8, "Associativity of the CMC storage table")
     degree = Param.Int(16, "Number of prefetches to generate")
+    issue_cmc_stream = Param.Bool(
+        True,
+        "Issue the baseline CMC stream on a storage hit. Disable to isolate "
+        "branch/load-PC head-delta features while still training CMC metadata",
+    )
+    remap_streams = Param.Bool(
+        False,
+        "Train CMC streams as chained lookup/target remap segments instead "
+        "of one full candidate vector per trigger",
+    )
+    remap_segment_degree = Param.Unsigned(
+        4,
+        "Number of targets stored in each remap segment when remap_streams "
+        "is enabled",
+    )
+    remap_use_branch_context = Param.Bool(
+        False,
+        "Include the previous-branch context in remap CMC storage keys. This "
+        "keeps different control-flow paths from sharing the same remap "
+        "lookup block",
+    )
+    remap_use_taken = Param.Bool(
+        False,
+        "Include the previous-branch taken bit in remap storage keys when "
+        "remap_use_branch_context is enabled",
+    )
+    remap_split_on_branch_change = Param.Bool(
+        False,
+        "End a remap segment early when the recorded previous-branch context "
+        "changes inside the candidate stream",
+    )
     use_last_branch_taken = Param.Bool(
         False,
         "Use the previous execution's saved branch PC for the same load PC "

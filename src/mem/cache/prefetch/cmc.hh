@@ -60,7 +60,19 @@ class CMCPrefetcher : public Queued
     class Recorder
     {
         public:
+            struct Access
+            {
+                Addr pc = 0;
+                Addr addr = 0;
+                bool is_secure = true;
+                bool has_prev_load_branch = false;
+                bool use_prev_branch_for_chooser = false;
+                Addr prev_branch_pc = 0;
+                bool last_branch_taken = false;
+            };
+
             std::vector<Addr> entries;
+            std::vector<Access> accesses;
             int index;
             const int nr_entry;
 
@@ -72,7 +84,7 @@ class CMCPrefetcher : public Queued
             bool entry_empty() { return entries.empty(); }
             Addr get_base_addr() { return entries[0]; }
 
-            bool train_entry(Addr, bool, bool*);
+            bool train_entry(Addr, bool, bool*, Addr, bool, bool, Addr, bool);
             void reset();
             // const int nr_entry = 16;
         private:
@@ -276,6 +288,10 @@ class CMCPrefetcher : public Queued
         statistics::Scalar cmcStorageVictimReplacements;
         statistics::Scalar cmcStorageVictimInvalid;
         statistics::Scalar chooserTrainUpdates;
+        statistics::Scalar remapSegmentsTrained;
+        statistics::Scalar remapContinuationSegments;
+        statistics::Scalar remapBranchKeyedSegments;
+        statistics::Scalar remapBranchSplitStops;
 
         statistics::Formula prevBranchFeatureValidRate;
         statistics::Formula baselineLookupHitRate;
@@ -295,6 +311,7 @@ class CMCPrefetcher : public Queued
     Recorder *recorder;
     AssociativeSet<StorageEntry> storage;
     uint64_t acc_id = 1;
+    const bool issueCmcStream;
     const bool useLastBranchTaken;
     const unsigned chooserTopK;
     const bool chooserUseTaken;
@@ -327,6 +344,11 @@ class CMCPrefetcher : public Queued
     const bool filterBiasedPrevBranches;
     const unsigned branchBiasMinSamples;
     const unsigned branchBiasMaxPct;
+    const bool remapStreams;
+    const unsigned remapSegmentDegree;
+    const bool remapUseBranchContext;
+    const bool remapUseTaken;
+    const bool remapSplitOnBranchChange;
     const std::string prevBranchDumpFile;
     const uint64_t prevBranchDumpLimit;
     std::ofstream prevBranchDumpStream;
@@ -353,6 +375,16 @@ class CMCPrefetcher : public Queued
     {
         return addr ^ (static_cast<uint64_t>(pc) << 8);
     }
+
+    uint64_t makeStorageKey(Addr addr, Addr pc, bool prev_branch_valid,
+                            Addr prev_branch_pc, bool prev_branch_taken) const;
+    StorageEntry *writeStorageEntry(uint64_t key, Addr pc, Addr trigger_addr,
+                                    bool is_secure,
+                                    const std::vector<Addr> &addresses,
+                                    bool count_train_hit);
+    void trainRemapEntries(const RecordEntry &trigger_head);
+    bool remapBranchContextDiffers(const Recorder::Access &previous,
+                                   const Recorder::Access &current) const;
 
     static const int STACK_SIZE = 4;
     static constexpr std::size_t MaxTrackedPrefetchSources = 262144;
