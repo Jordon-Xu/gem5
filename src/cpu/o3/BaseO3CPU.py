@@ -215,6 +215,13 @@ class BaseO3CPU(BaseCPU):
         "Order used to select the previous branch context for a load: "
         "program or execution",
     )
+    branch_context_source = Param.String(
+        "actual",
+        "Branch context source for memory requests: actual execution outcome "
+        "or branch-predictor prediction, or high-confidence "
+        "branch-predictor prediction with actual-outcome fallback, or actual "
+        "outcome gated by branch-predictor confidence",
+    )
     needsTSO = Param.Bool(False, "Enable TSO Memory model")
 
     recvRespThrottling = Param.Bool(

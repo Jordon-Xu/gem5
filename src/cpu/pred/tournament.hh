@@ -73,6 +73,7 @@ class TournamentBP : public ConditionalPredictor
 
     // Base class methods.
     bool lookup(ThreadID tid, Addr pc, void* &bp_history) override;
+    bool predictionHighConfidence(void *bp_history) const override;
     void updateHistories(ThreadID tid, Addr pc, bool uncond, bool taken,
                          Addr target, const StaticInstPtr &inst,
                          void * &bp_history) override;
@@ -130,6 +131,7 @@ class TournamentBP : public ConditionalPredictor
         bool localPredTaken;
         bool globalPredTaken;
         bool globalUsed;
+        bool highConfidence;
     };
 
     /** Flag for invalid predictor index */

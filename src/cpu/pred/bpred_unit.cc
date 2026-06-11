@@ -151,6 +151,8 @@ BPredUnit::predict(const StaticInstPtr &inst, const InstSeqNum &seqNum,
         // Conditional branches -------
         ++stats.condPredicted;
         hist->condPred = cPred->lookup(tid, pc.instAddr(), hist->bpHistory);
+        hist->condPredHighConfidence =
+            cPred->predictionHighConfidence(hist->bpHistory);
 
         if (hist->condPred) {
             ++stats.condPredictedTaken;

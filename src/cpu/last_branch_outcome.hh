@@ -11,15 +11,18 @@ class LastBranchOutcomeExtension
     : public Extension<Request, LastBranchOutcomeExtension>
 {
   public:
-    LastBranchOutcomeExtension(bool valid, Addr pc, bool taken)
-        : valid(valid), pc(pc), taken(taken)
+    LastBranchOutcomeExtension(bool valid, Addr pc, bool taken,
+                               bool bp_high_confidence)
+        : valid(valid), pc(pc), taken(taken),
+          bpHighConfidence(bp_high_confidence)
     {}
 
     std::unique_ptr<ExtensionBase>
     clone() const override
     {
         return std::unique_ptr<LastBranchOutcomeExtension>(
-            new LastBranchOutcomeExtension(valid, pc, taken));
+            new LastBranchOutcomeExtension(valid, pc, taken,
+                                           bpHighConfidence));
     }
 
     bool
@@ -34,6 +37,12 @@ class LastBranchOutcomeExtension
         return taken;
     }
 
+    bool
+    previousLoadBranchBpHighConfidence() const
+    {
+        return bpHighConfidence;
+    }
+
     Addr
     previousLoadBranchPC() const
     {
@@ -44,6 +53,7 @@ class LastBranchOutcomeExtension
     bool valid;
     Addr pc;
     bool taken;
+    bool bpHighConfidence;
 };
 
 } // namespace gem5

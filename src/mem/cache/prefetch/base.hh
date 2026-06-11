@@ -140,6 +140,8 @@ class Base : public ClockedObject
         Addr prevLoadBranchPC;
         /** The previous same-load-PC branch taken/not-taken bit. */
         bool prevLoadBranchTaken;
+        /** Whether the branch predictor was highly confident for it. */
+        bool prevLoadBranchBpHighConfidence;
 
       public:
         /**
@@ -255,6 +257,13 @@ class Base : public ClockedObject
         {
             assert(hasPrevLoadBranchOutcome());
             return prevLoadBranchTaken;
+        }
+
+        bool
+        getPrevLoadBranchBpHighConfidence() const
+        {
+            assert(hasPrevLoadBranchOutcome());
+            return prevLoadBranchBpHighConfidence;
         }
 
         /**

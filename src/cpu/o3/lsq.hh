@@ -291,6 +291,7 @@ class LSQ
         bool _prevLoadBranchOutcomeValid;
         Addr _prevLoadBranchPC;
         bool _prevLoadBranchTaken;
+        bool _prevLoadBranchBpHighConfidence;
 
       protected:
         LSQUnit* lsqUnit() { return &_port; }

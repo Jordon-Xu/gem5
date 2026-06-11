@@ -37,6 +37,9 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
         "Lookups where the previous branch feature is filtered out"),
     ADD_STAT(prevBranchChooserUsableLookups, statistics::units::Count::get(),
         "Lookups with a previous branch feature usable by the chooser"),
+    ADD_STAT(prevBranchBpHighConfidenceLookups, statistics::units::Count::get(),
+        "Lookups whose previous branch context had a high-confidence "
+        "branch-predictor lookup"),
     ADD_STAT(baselineLookupHits, statistics::units::Count::get(),
         "Lookup hits using the baseline (block_addr, load_pc) key"),
     ADD_STAT(augmentedLookupHits, statistics::units::Count::get(),
@@ -109,6 +112,10 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(chooserConstructCacheSkips, statistics::units::Count::get(),
         "Chooser predictions not constructed because the predicted address "
         "was already in cache or MSHR"),
+    ADD_STAT(chooserConstructBpConfidenceSkips,
+        statistics::units::Count::get(),
+        "Chooser predictions not constructed because the previous branch "
+        "context was not high-confidence in the branch predictor"),
     ADD_STAT(chooserUtilityConstructSkips, statistics::units::Count::get(),
         "Chooser predictions not constructed because their utility score was "
         "below the construct threshold"),
@@ -174,6 +181,9 @@ CMCPrefetcher::Stats::Stats(statistics::Group *parent)
     ADD_STAT(accessHeadCacheSkips, statistics::units::Count::get(),
         "Access-time branch-head predictions skipped because the address was "
         "already in cache or MSHR"),
+    ADD_STAT(accessHeadBpConfidenceSkips, statistics::units::Count::get(),
+        "Access-time branch-head predictions skipped because the previous "
+        "branch context was not high-confidence in the branch predictor"),
     ADD_STAT(accessHeadFeedbacks, statistics::units::Count::get(),
         "Next same-load-PC delta feedback samples for access-time branch-head "
         "predictions"),
@@ -347,6 +357,10 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     chooserConstructMinTopPct(
         std::min<unsigned>(p.prev_branch_chooser_construct_min_top_pct, 100)),
     chooserConstructCacheFilter(p.prev_branch_chooser_construct_cache_filter),
+    chooserConstructRequireBpConfidence(
+        p.prev_branch_chooser_construct_require_bp_confidence),
+    chooserConstructRequireUtilityScore(
+        p.prev_branch_chooser_construct_require_utility_score),
     chooserUseUtilityScore(p.prev_branch_chooser_use_utility_score),
     chooserConstructMinScore(p.prev_branch_chooser_construct_min_score),
     chooserThrottleMinScore(p.prev_branch_chooser_throttle_min_score),
@@ -356,6 +370,8 @@ CMCPrefetcher::CMCPrefetcher(const CMCPrefetcherParams &p)
     prevBranchAccessMinScore(p.prev_branch_access_min_score),
     prevBranchAccessLookahead(std::max(1U, p.prev_branch_access_lookahead)),
     prevBranchAccessCacheFilter(p.prev_branch_access_cache_filter),
+    prevBranchAccessRequireBpConfidence(
+        p.prev_branch_access_require_bp_confidence),
     filterBiasedPrevBranches(p.prev_branch_filter_biased),
     branchBiasMinSamples(p.prev_branch_bias_min_samples),
     branchBiasMaxPct(std::min<unsigned>(p.prev_branch_bias_max_pct, 100)),
@@ -678,6 +694,7 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
                                   bool prev_branch_valid,
                                   Addr prev_branch_pc,
                                   bool prev_branch_taken,
+                                  bool prev_branch_bp_high_confidence,
                                   std::vector<AddrPriority> &addresses,
                                   const CacheAccessor &cache, bool is_secure)
 {
@@ -778,15 +795,31 @@ CMCPrefetcher::applyHeadDeltaHint(Addr block_addr, Addr pc,
         const bool limit_this_hint =
             hard_limit_active || adaptive_limit_active;
 
+        const bool bp_construct_allowed =
+            !chooserConstructRequireBpConfidence ||
+            prev_branch_bp_high_confidence;
+        const bool score_construct_allowed =
+            !chooserConstructRequireUtilityScore ||
+            entry.utilityScores[candidate] >= chooserConstructMinScore;
+        const bool construct_path_enabled =
+            chooserConstructPredicted &&
+            (chooserLimitOnHit || chooserAdaptiveLimit ||
+             chooserSelectiveConstruct);
         const bool can_construct =
             chooserConstructPredicted &&
+            bp_construct_allowed &&
+            score_construct_allowed &&
             (limit_this_hint || chooserSelectiveConstruct ||
              (chooserAdaptiveLimit && chooserUseUtilityScore &&
               utility_construct_allowed));
-        if (!predicted_found && chooserConstructPredicted &&
-            (chooserLimitOnHit || chooserAdaptiveLimit ||
-             chooserSelectiveConstruct) &&
-            !can_construct) {
+        if (!predicted_found && construct_path_enabled &&
+            !bp_construct_allowed) {
+            cmcStats.chooserConstructBpConfidenceSkips++;
+        } else if (!predicted_found && construct_path_enabled &&
+                   !score_construct_allowed) {
+            cmcStats.chooserUtilityConstructSkips++;
+        } else if (!predicted_found && construct_path_enabled &&
+                   !can_construct) {
             cmcStats.chooserUtilityConstructSkips++;
         }
         if (!predicted_found && can_construct) {
@@ -926,12 +959,19 @@ CMCPrefetcher::issueAccessHeadPrediction(Addr block_addr, Addr pc,
                                          bool prev_branch_valid,
                                          Addr prev_branch_pc,
                                          bool prev_branch_taken,
+                                         bool prev_branch_bp_high_confidence,
                                          std::vector<AddrPriority> &addresses,
                                          const CacheAccessor &cache,
                                          bool is_secure)
 {
     if (!prevBranchAccessPredictor || !useLastBranchTaken ||
         !prev_branch_valid) {
+        return false;
+    }
+
+    if (prevBranchAccessRequireBpConfidence &&
+        !prev_branch_bp_high_confidence) {
+        cmcStats.accessHeadBpConfidenceSkips++;
         return false;
     }
 
@@ -1364,6 +1404,9 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
         prev_load_branch_valid ? pfi.getPrevLoadBranchPC() : 0;
     const bool prev_load_branch_taken =
         prev_load_branch_valid ? pfi.getPrevLoadBranchTaken() : false;
+    const bool prev_load_branch_bp_high_confidence =
+        prev_load_branch_valid ?
+        pfi.getPrevLoadBranchBpHighConfidence() : false;
     const bool baseline_event = pfi.isCacheMiss() || pfi.wasPrefetched();
     bool prev_load_branch_biased = false;
     bool prev_load_branch_usable = false;
@@ -1387,6 +1430,7 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
     if (!baseline_event) {
         issueAccessHeadPrediction(block_addr, pc, prev_load_branch_valid,
                                   prev_load_branch_pc, prev_load_branch_taken,
+                                  prev_load_branch_bp_high_confidence,
                                   addresses, cache_accessor, is_secure);
         return;
     }
@@ -1398,6 +1442,9 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             cmcStats.prevBranchTakenLookups++;
         } else {
             cmcStats.prevBranchNotTakenLookups++;
+        }
+        if (prev_load_branch_bp_high_confidence) {
+            cmcStats.prevBranchBpHighConfidenceLookups++;
         }
         cmcStats.lookupAugmentedKeyDiffersFromBaseline++;
         prev_load_branch_biased = updatePrevBranchPcStats(
@@ -1470,6 +1517,7 @@ CMCPrefetcher::calculatePrefetch(const PrefetchInfo &pfi,
             hint = applyHeadDeltaHint(
                 block_addr, pc, prev_load_branch_usable,
                 prev_load_branch_pc, prev_load_branch_taken,
+                prev_load_branch_bp_high_confidence,
                 addresses, cache_accessor, is_secure);
         }
         if (hint.hasPrediction) {

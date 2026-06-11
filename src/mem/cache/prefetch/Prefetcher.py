@@ -931,6 +931,18 @@ class CMCPrefetcher(QueuedPrefetcher):
         True,
         "Skip constructed predicted heads that are already in cache or MSHR",
     )
+    prev_branch_chooser_construct_require_bp_confidence = Param.Bool(
+        False,
+        "Only construct missing chooser-predicted heads when the previous "
+        "branch context has a high-confidence branch-predictor lookup",
+    )
+    prev_branch_chooser_construct_require_utility_score = Param.Bool(
+        False,
+        "Only construct missing chooser-predicted heads when the chooser "
+        "candidate's online utility score reaches "
+        "prev_branch_chooser_construct_min_score. This gates construction "
+        "without globally changing stream limiting decisions.",
+    )
     prev_branch_chooser_use_utility_score = Param.Bool(
         False,
         "Use online same-load-PC next-delta feedback to gate constructed "
@@ -977,6 +989,11 @@ class CMCPrefetcher(QueuedPrefetcher):
     prev_branch_access_cache_filter = Param.Bool(
         True,
         "Skip access-time branch-head predictions already in cache or MSHR",
+    )
+    prev_branch_access_require_bp_confidence = Param.Bool(
+        False,
+        "Only issue access-time branch-head predictions when the previous "
+        "branch context has a high-confidence branch-predictor lookup",
     )
     prev_branch_filter_biased = Param.Bool(
         False,

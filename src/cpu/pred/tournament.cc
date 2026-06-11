@@ -155,23 +155,38 @@ TournamentBP::lookup(ThreadID tid, Addr pc, void * &bp_history)
     bool local_prediction;
     unsigned local_history_idx;
     unsigned local_predictor_idx;
+    unsigned local_counter;
 
     bool global_prediction;
+    unsigned global_predictor_idx;
+    unsigned global_counter;
     bool choice_prediction;
 
     //Lookup in the local predictor to get its branch prediction
     local_history_idx = calcLocHistIdx(pc);
     local_predictor_idx = localHistoryTable[local_history_idx]
         & localPredictorMask;
-    local_prediction = localCtrs[local_predictor_idx] > localThreshold;
+    local_counter = localCtrs[local_predictor_idx];
+    local_prediction = local_counter > localThreshold;
 
     //Lookup in the global predictor to get its branch prediction
-    global_prediction = globalThreshold <
-      globalCtrs[globalHistory[tid] & globalHistoryMask];
+    global_predictor_idx = globalHistory[tid] & globalHistoryMask;
+    global_counter = globalCtrs[global_predictor_idx];
+    global_prediction = globalThreshold < global_counter;
 
     //Lookup in the choice predictor to see which one to use
     choice_prediction = choiceThreshold <
       choiceCtrs[globalHistory[tid] & choiceHistoryMask];
+
+    const unsigned selected_counter =
+        choice_prediction ? global_counter : local_counter;
+    const unsigned selected_bits =
+        choice_prediction ? globalCtrBits : localCtrBits;
+    const unsigned max_counter = (1U << selected_bits) - 1;
+    const bool selected_taken =
+        choice_prediction ? global_prediction : local_prediction;
+    const bool high_confidence = selected_taken ?
+        selected_counter == max_counter : selected_counter == 0;
 
     // Create BPHistory and pass it back to be recorded.
     BPHistory *history = new BPHistory;
@@ -181,6 +196,7 @@ TournamentBP::lookup(ThreadID tid, Addr pc, void * &bp_history)
     history->globalUsed = choice_prediction;
     history->localHistoryIdx = local_history_idx;
     history->localHistory = local_predictor_idx;
+    history->highConfidence = high_confidence;
     bp_history = (void *)history;
 
     assert(local_history_idx < localHistoryTableSize);
@@ -192,6 +208,13 @@ TournamentBP::lookup(ThreadID tid, Addr pc, void * &bp_history)
     } else {
         return local_prediction;
     }
+}
+
+bool
+TournamentBP::predictionHighConfidence(void *bp_history) const
+{
+    const BPHistory *history = static_cast<BPHistory *>(bp_history);
+    return history && history->highConfidence;
 }
 
 void
@@ -209,6 +232,7 @@ TournamentBP::updateHistories(ThreadID tid, Addr pc, bool uncond, bool taken,
         history->globalUsed = true;
         history->localHistoryIdx = invalidPredictorIndex;
         history->localHistory = invalidPredictorIndex;
+        history->highConfidence = true;
         bp_history = static_cast<void *>(history);
     }
 

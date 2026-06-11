@@ -75,6 +75,17 @@ class ConditionalPredictor : public SimObject
     virtual bool lookup(ThreadID tid, Addr pc, void * &bp_history) = 0;
 
     /**
+     * Returns whether the most recent lookup represented by bp_history was a
+     * high-confidence direction prediction. Predictors that do not expose
+     * confidence should keep the default false value.
+     */
+    virtual bool
+    predictionHighConfidence(void *bp_history) const
+    {
+        return false;
+    }
+
+    /**
      * Ones done with the prediction this function updates the
      * path and global history. All branches call this function
      * including unconditional once.

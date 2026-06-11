@@ -411,7 +411,8 @@ class LSQUnit
     BaseMMU *getMMUPtr();
 
     void capturePreviousLoadBranchState(const DynInstPtr &inst, bool &valid,
-                                        Addr &branch_pc, bool &taken);
+                                        Addr &branch_pc, bool &taken,
+                                        bool &bp_high_confidence);
 
   private:
     struct LoadBranchState
@@ -419,6 +420,7 @@ class LSQUnit
         bool valid = false;
         Addr branchPC = 0;
         bool taken = false;
+        bool bpHighConfidence = false;
     };
 
     struct LoadBranchStateLogEntry

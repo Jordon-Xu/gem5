@@ -63,6 +63,44 @@ namespace gem5
 namespace o3
 {
 
+namespace
+{
+
+bool
+shouldRecordBranchContext(CPU *cpu, const StaticInstPtr &inst,
+                          const PCStateBase &branch_pc)
+{
+    if (cpu->recordsConditionalBranchContext()) {
+        return inst->isCondCtrl();
+    }
+
+    if (cpu->recordsBackwardBranchContext() &&
+        inst->isCondCtrl() && inst->isDirectCtrl()) {
+        const auto target = inst->branchTarget(branch_pc);
+        return target->instAddr() < branch_pc.instAddr();
+    }
+
+    return false;
+}
+
+void
+recordPredictedBranchContext(CPU *cpu, ThreadID tid, InstSeqNum seq_num,
+                             const StaticInstPtr &inst,
+                             const PCStateBase &branch_pc, bool taken,
+                             bool high_confidence)
+{
+    if (!cpu->recordsPredictedBranchContext()) {
+        return;
+    }
+
+    if (shouldRecordBranchContext(cpu, inst, branch_pc)) {
+        cpu->recordBranchPrediction(tid, seq_num, branch_pc.instAddr(),
+                                    taken, high_confidence);
+    }
+}
+
+} // anonymous namespace
+
 // clang-format off
 std::string BAC::BACStats::statusStrings[ThreadStatusMax] = {
     "Idle",
@@ -779,6 +817,7 @@ BAC::updatePreDecode(ThreadID tid, const InstSeqNum seqNum,
             __func__, tid, seqNum, branch_prediction::toString(brType),
             pc.instAddr(), ft->ftNum(), ft->predTaken(), ft->endAddress());
 
+    auto branch_pc = std::unique_ptr<PCStateBase>(pc.clone());
     bool target_set = false;
     BPredUnit::PredictorHistory *hist = nullptr;
 
@@ -883,6 +922,9 @@ BAC::updatePreDecode(ThreadID tid, const InstSeqNum seqNum,
     // Assign the branch instruction instance its sequence number
     // and push the history to the main history buffer.
     hist->seqNum = seqNum;
+    recordPredictedBranchContext(cpu, tid, seqNum, inst, *branch_pc,
+                                 hist->predTaken,
+                                 hist->condPredHighConfidence);
     bpu->insertPredictorHistory(tid, hist);
 
     // Finally update the current fetch PC if not already done.
@@ -912,6 +954,7 @@ BAC::updatePC(const DynInstPtr &inst, PCStateBase &fetch_pc,
 
     if (inst->isControl()) {
         // The instruction is a control instruction.
+        auto branch_pc = std::unique_ptr<PCStateBase>(fetch_pc.clone());
 
         if (decoupledFrontEnd) {
             // With a decoupled front-end the branch prediction was done
@@ -922,8 +965,14 @@ BAC::updatePC(const DynInstPtr &inst, PCStateBase &fetch_pc,
         } else {
             // With a coupled front-end we need to make the branch prediction
             // here.
-            predict_taken =
-                bpu->predict(inst->staticInst, inst->seqNum, fetch_pc, tid);
+            BPredUnit::PredictorHistory *hist = nullptr;
+            predict_taken = bpu->predict(inst->staticInst, inst->seqNum,
+                                         fetch_pc, tid, hist);
+            recordPredictedBranchContext(cpu, tid, inst->seqNum,
+                                         inst->staticInst, *branch_pc,
+                                         predict_taken,
+                                         hist->condPredHighConfidence);
+            bpu->insertPredictorHistory(tid, hist);
         }
 
         DPRINTF(BAC,

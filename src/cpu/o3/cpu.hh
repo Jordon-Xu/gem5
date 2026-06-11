@@ -127,6 +127,7 @@ class CPU : public BaseCPU
         InstSeqNum seqNum = 0;
         Addr pc = 0;
         bool taken = false;
+        bool highConfidence = true;
     };
     struct BranchOutcomeStats
     {
@@ -137,10 +138,12 @@ class CPU : public BaseCPU
     static constexpr uint64_t BranchBiasMinSamples = 64;
     static constexpr unsigned BranchBiasMaxPct = 98;
     std::vector<std::deque<BranchOutcomeRecord>> recentBranchOutcomes;
+    std::vector<std::deque<BranchOutcomeRecord>> recentBranchPredictions;
     std::vector<std::unordered_map<Addr, BranchOutcomeStats>>
         branchOutcomeStats;
     const std::string branchContextMode;
     const std::string branchContextOrder;
+    const std::string branchContextSource;
 
     bool
     recordsConditionalBranchContext() const
@@ -164,6 +167,36 @@ class CPU : public BaseCPU
     usesExecutionOrderBranchContext() const
     {
         return branchContextOrder == "execution";
+    }
+
+    bool
+    usesActualBranchContext() const
+    {
+        return branchContextSource == "actual";
+    }
+
+    bool
+    usesPredictedBranchContext() const
+    {
+        return branchContextSource == "predicted";
+    }
+
+    bool
+    usesPredictedConfidentBranchContext() const
+    {
+        return branchContextSource == "predicted_confident";
+    }
+
+    bool
+    usesActualBpConfidentBranchContext() const
+    {
+        return branchContextSource == "actual_bp_confident";
+    }
+
+    bool
+    recordsPredictedBranchContext() const
+    {
+        return true;
     }
 
   private:
@@ -233,8 +266,27 @@ class CPU : public BaseCPU
             stats.notTaken++;
         }
 
+        bool high_confidence = false;
+        for (const auto &prediction : recentBranchPredictions[tid]) {
+            if (prediction.seqNum == seq_num && prediction.pc == pc) {
+                high_confidence = prediction.highConfidence;
+                break;
+            }
+        }
+
         auto &history = recentBranchOutcomes[tid];
-        history.push_back({seq_num, pc, taken});
+        history.push_back({seq_num, pc, taken, high_confidence});
+        if (history.size() > MaxRecentBranchOutcomes) {
+            history.pop_front();
+        }
+    }
+
+    void
+    recordBranchPrediction(ThreadID tid, InstSeqNum seq_num,
+                           Addr pc, bool taken, bool high_confidence)
+    {
+        auto &history = recentBranchPredictions[tid];
+        history.push_back({seq_num, pc, taken, high_confidence});
         if (history.size() > MaxRecentBranchOutcomes) {
             history.pop_front();
         }
@@ -263,54 +315,100 @@ class CPU : public BaseCPU
     bool
     getLastOlderBranchOutcome(ThreadID tid, InstSeqNum seq_num,
                               Addr &pc, bool &taken,
+                              bool &bp_high_confidence,
                               bool skip_biased = false) const
     {
-        const auto &history = recentBranchOutcomes[tid];
-        if (usesExecutionOrderBranchContext()) {
-            for (auto it = history.rbegin(); it != history.rend(); ++it) {
-                if (it->seqNum < seq_num) {
-                    if (skip_biased && isBranchOutcomeBiased(tid, it->pc)) {
+        auto find_record = [&](const std::deque<BranchOutcomeRecord> &history)
+            -> const BranchOutcomeRecord * {
+            if (usesExecutionOrderBranchContext()) {
+                for (auto it = history.rbegin(); it != history.rend(); ++it) {
+                    if (it->seqNum < seq_num) {
+                        if (skip_biased && isBranchOutcomeBiased(tid, it->pc)) {
+                            continue;
+                        }
+                        return &(*it);
+                    }
+                }
+                return nullptr;
+            }
+
+            const BranchOutcomeRecord *best = nullptr;
+            for (const auto &record : history) {
+                if (record.seqNum < seq_num) {
+                    if (skip_biased && isBranchOutcomeBiased(tid, record.pc)) {
                         continue;
                     }
-                    pc = it->pc;
-                    taken = it->taken;
-                    return true;
+                    if (!best || record.seqNum > best->seqNum) {
+                        best = &record;
+                    }
                 }
             }
+            return best;
+        };
+
+        auto find_record_by_seq =
+            [&](const std::deque<BranchOutcomeRecord> &history,
+                InstSeqNum target_seq) -> const BranchOutcomeRecord * {
+            for (const auto &record : history) {
+                if (record.seqNum == target_seq) {
+                    return &record;
+                }
+            }
+            return nullptr;
+        };
+
+        const BranchOutcomeRecord *selected = nullptr;
+
+        if (usesPredictedBranchContext()) {
+            selected = find_record(recentBranchPredictions[tid]);
+        } else if (usesPredictedConfidentBranchContext()) {
+            const BranchOutcomeRecord *predicted =
+                find_record(recentBranchPredictions[tid]);
+            if (predicted && predicted->highConfidence) {
+                selected = predicted;
+            } else {
+                selected = find_record(recentBranchOutcomes[tid]);
+            }
+        } else if (usesActualBpConfidentBranchContext()) {
+            const BranchOutcomeRecord *actual =
+                find_record(recentBranchOutcomes[tid]);
+            if (actual) {
+                const BranchOutcomeRecord *predicted =
+                    find_record_by_seq(recentBranchPredictions[tid],
+                                       actual->seqNum);
+                if (predicted && predicted->pc == actual->pc &&
+                    predicted->highConfidence) {
+                    selected = actual;
+                }
+            }
+        } else {
+            selected = find_record(recentBranchOutcomes[tid]);
+        }
+
+        if (!selected) {
             return false;
         }
 
-        const BranchOutcomeRecord *best = nullptr;
-        for (const auto &record : history) {
-            if (record.seqNum < seq_num) {
-                if (skip_biased && isBranchOutcomeBiased(tid, record.pc)) {
-                    continue;
-                }
-                if (!best || record.seqNum > best->seqNum) {
-                    best = &record;
-                }
-            }
-        }
-        if (!best) {
-            return false;
-        }
-
-        pc = best->pc;
-        taken = best->taken;
+        pc = selected->pc;
+        taken = selected->taken;
+        bp_high_confidence = selected->highConfidence;
         return true;
     }
 
     void
     squashBranchOutcomeHistory(ThreadID tid, InstSeqNum squashed_num)
     {
-        auto &history = recentBranchOutcomes[tid];
-        std::deque<BranchOutcomeRecord> kept;
-        for (const auto &record : history) {
-            if (record.seqNum <= squashed_num) {
-                kept.push_back(record);
+        for (auto *history : {
+                &recentBranchOutcomes[tid],
+                &recentBranchPredictions[tid]}) {
+            std::deque<BranchOutcomeRecord> kept;
+            for (const auto &record : *history) {
+                if (record.seqNum <= squashed_num) {
+                    kept.push_back(record);
+                }
             }
+            history->swap(kept);
         }
-        history.swap(kept);
     }
 
     ProbePointArg<PacketPtr> *ppInstAccessComplete;
